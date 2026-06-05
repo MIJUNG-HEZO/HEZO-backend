@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 협업 컨벤션 문서
+    url: https://github.com/MIJUNG-HEZO/HEZO-backend/blob/main/CONTRIBUTING.md
+    about: 이슈 작성 전 커밋, 브랜치, PR 컨벤션을 확인해주세요.
