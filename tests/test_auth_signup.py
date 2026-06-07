@@ -125,6 +125,22 @@ def test_signup_returns_created_user_without_sensitive_fields() -> None:
     assert fake_auth_service.payload.email == "user@example.com"
 
 
+def test_signup_rejects_non_string_trimmed_fields_with_validation_error() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": "user@example.com",
+            "password": "safe-password",
+            "name": None,
+            "phone": 1234,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_auth_service_creates_user_with_hashed_password() -> None:
     async def run_signup() -> None:
         session = FakeSession()

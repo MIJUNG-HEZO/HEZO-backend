@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -17,14 +18,18 @@ class SignupRequest(BaseModel):
 
     @field_validator("name", mode="before")
     @classmethod
-    def strip_name(cls, name: str) -> str:
+    def strip_name(cls, name: Any) -> Any:
+        if not isinstance(name, str):
+            return name
         return name.strip()
 
     @field_validator("phone", mode="before")
     @classmethod
-    def strip_phone(cls, phone: str | None) -> str | None:
+    def strip_phone(cls, phone: Any) -> Any:
         if phone is None:
             return None
+        if not isinstance(phone, str):
+            return phone
         phone = phone.strip()
         return phone or None
 
