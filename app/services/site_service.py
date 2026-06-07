@@ -8,7 +8,12 @@ from app.core.exceptions import AppException
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.site_repository import SiteRepository
 from app.repositories.subscription_repository import SubscriptionRepository
-from app.schemas.site import VALID_SITE_MODULE_PAIRS, SiteCreateRequest, SiteResponse
+from app.schemas.site import (
+    VALID_SITE_MODULE_PAIRS,
+    SiteCreateRequest,
+    SiteListResponse,
+    SiteResponse,
+)
 from app.services.plan_policy_service import PlanPolicyService
 
 
@@ -65,3 +70,8 @@ class SiteService:
             raise
 
         return SiteResponse.model_validate(site)
+
+    async def list_sites(self, *, user_id: UUID) -> SiteListResponse:
+        sites = await self.site_repository.list_active_sites_by_owner(user_id)
+        items = [SiteResponse.model_validate(site) for site in sites]
+        return SiteListResponse(items=items, total=len(items))
