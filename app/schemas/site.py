@@ -30,3 +30,8 @@ class SiteResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SiteListResponse(BaseModel):
+    items: list[SiteResponse]
+    total: int

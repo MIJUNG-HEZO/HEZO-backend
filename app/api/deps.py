@@ -22,7 +22,7 @@ class CurrentUser:
         return self.email_verified_at is not None
 
 
-async def require_email_verified() -> CurrentUser:
+async def require_authenticated() -> CurrentUser:
     raise AppException(
         code=error_codes.UNAUTHORIZED,
         message="Authentication is required.",
@@ -30,8 +30,18 @@ async def require_email_verified() -> CurrentUser:
     )
 
 
+async def require_email_verified() -> CurrentUser:
+    return await require_authenticated()
+
+
 def get_site_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> SiteService:
     return SiteService(session)
 
 
-__all__ = ["CurrentUser", "get_db_session", "get_site_service", "require_email_verified"]
+__all__ = [
+    "CurrentUser",
+    "get_db_session",
+    "get_site_service",
+    "require_authenticated",
+    "require_email_verified",
+]
