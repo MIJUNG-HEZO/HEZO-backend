@@ -14,3 +14,12 @@ class PlanRepository:
         stmt = select(Plan).where(Plan.id == plan_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_active(self) -> list[Plan]:
+        stmt = (
+            select(Plan)
+            .where(Plan.is_active.is_(True))
+            .order_by(Plan.price_monthly.asc(), Plan.code.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
