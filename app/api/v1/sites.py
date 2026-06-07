@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
@@ -20,6 +21,15 @@ async def list_sites(
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteListResponse:
     return await site_service.list_sites(user_id=current_user.id)
+
+
+@router.get("/{site_id}", response_model=SiteResponse)
+async def get_site(
+    site_id: UUID,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    site_service: Annotated[SiteService, Depends(get_site_service)],
+) -> SiteResponse:
+    return await site_service.get_site(user_id=current_user.id, site_id=site_id)
 
 
 @router.post("", response_model=SiteResponse, status_code=status.HTTP_201_CREATED)
