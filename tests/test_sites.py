@@ -16,7 +16,7 @@ from app.core import error_codes
 from app.core.enums import ModuleKey, SiteStatus, SiteType
 from app.core.exceptions import AppException
 from app.main import app
-from app.schemas.site import SiteCreateRequest, SiteListResponse, SiteResponse
+from app.schemas.site import SiteCreateRequest, SiteListResponse, SiteResponse, SiteUpdateRequest
 from app.services.plan_policy_service import PlanPolicyService
 from app.services.site_service import SiteService
 
@@ -94,6 +94,27 @@ class FakeSiteService:
             updated_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
         )
 
+    async def update_site(
+        self,
+        *,
+        user_id: UUID,
+        site_id: UUID,
+        payload: SiteUpdateRequest,
+    ) -> SiteResponse:
+        self.listed_by_user_id = user_id
+        self.requested_site_id = site_id
+        return SiteResponse(
+            id=site_id,
+            name=payload.name,
+            site_type=payload.site_type,
+            module_key=payload.module_key,
+            status=SiteStatus.DRAFT,
+            is_published=False,
+            published_at=None,
+            created_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 7, 3, tzinfo=UTC),
+        )
+
 
 class FakeSubscription:
     def __init__(self, plan_id: UUID) -> None:
@@ -155,6 +176,30 @@ class FakeDetailSiteRepository:
         self.owner_id = owner_id
         return self.site
 
+    async def update_basic_info(
+        self,
+        *,
+        site: SimpleNamespace,
+        name: str,
+        site_type: SiteType,
+        module_key: ModuleKey,
+    ) -> SimpleNamespace:
+        site.name = name
+        site.site_type = site_type
+        site.module_key = module_key
+        return site
+
+
+class FakeAsyncSession:
+    async def commit(self) -> None:
+        return None
+
+    async def refresh(self, _: SimpleNamespace) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
 
 def test_create_site_requires_authentication() -> None:
     client = TestClient(app)
@@ -185,6 +230,22 @@ def test_get_site_requires_authentication() -> None:
     client = TestClient(app)
 
     response = client.get(f"/api/v1/sites/{uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
+
+
+def test_update_site_requires_authentication() -> None:
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/api/v1/sites/{uuid4()}",
+        json={
+            "name": "수정된 한의원",
+            "site_type": "landing",
+            "module_key": "medical",
+        },
+    )
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
@@ -235,6 +296,37 @@ def test_get_site_returns_current_user_site() -> None:
     assert fake_site_service.requested_site_id == site_id
 
 
+def test_update_site_returns_updated_site() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        client = TestClient(app)
+        response = client.patch(
+            f"/api/v1/sites/{site_id}",
+            json={
+                "name": "수정된 한의원",
+                "site_type": "landing",
+                "module_key": "medical",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(site_id)
+    assert body["name"] == "수정된 한의원"
+    assert body["site_type"] == "landing"
+    assert body["module_key"] == "medical"
+    assert fake_site_service.listed_by_user_id == current_user.id
+    assert fake_site_service.requested_site_id == site_id
+
+
 def test_create_site_returns_created_site() -> None:
     current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
     fake_site_service = FakeSiteService()
@@ -276,6 +368,28 @@ def test_create_site_rejects_invalid_site_module_combination() -> None:
             "/api/v1/sites",
             json={
                 "name": "강남 한의원",
+                "site_type": "blog",
+                "module_key": "medical",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == error_codes.INVALID_SITE_MODULE_COMBINATION
+
+
+def test_update_site_rejects_invalid_site_module_combination() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+
+    try:
+        client = TestClient(app)
+        response = client.patch(
+            f"/api/v1/sites/{uuid4()}",
+            json={
+                "name": "수정된 한의원",
                 "site_type": "blog",
                 "module_key": "medical",
             },
@@ -377,6 +491,67 @@ def test_site_service_raises_site_not_found() -> None:
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_get_site())
+
+
+def test_site_service_updates_site_basic_info() -> None:
+    async def run_update_site() -> None:
+        user_id = uuid4()
+        site_id = uuid4()
+        site = SimpleNamespace(
+            id=site_id,
+            name="강남 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+            status=SiteStatus.DRAFT,
+            is_published=False,
+            published_at=None,
+            created_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+        )
+        site_service = SiteService(session=None)
+        site_service.session = FakeAsyncSession()
+        site_service.site_repository = FakeDetailSiteRepository(site=site)
+        payload = SiteUpdateRequest(
+            name="수정된 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+        )
+
+        response = await site_service.update_site(
+            user_id=user_id,
+            site_id=site_id,
+            payload=payload,
+        )
+
+        assert response.id == site_id
+        assert response.name == "수정된 한의원"
+        assert site_service.site_repository.site_id == site_id
+        assert site_service.site_repository.owner_id == user_id
+
+    asyncio.run(run_update_site())
+
+
+def test_site_service_raises_site_not_found_when_updating_missing_site() -> None:
+    async def run_update_site() -> None:
+        site_service = SiteService(session=None)
+        site_service.site_repository = FakeDetailSiteRepository(site=None)
+        payload = SiteUpdateRequest(
+            name="수정된 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await site_service.update_site(
+                user_id=uuid4(),
+                site_id=uuid4(),
+                payload=payload,
+            )
+
+        assert exc_info.value.code == error_codes.SITE_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_update_site())
 
 
 def test_plan_policy_blocks_site_creation_when_limit_is_exceeded() -> None:

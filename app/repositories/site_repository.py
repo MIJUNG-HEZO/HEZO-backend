@@ -71,3 +71,17 @@ class SiteRepository:
         self.session.add(site)
         await self.session.flush()
         return site
+
+    async def update_basic_info(
+        self,
+        *,
+        site: Site,
+        name: str,
+        site_type: SiteType,
+        module_key: ModuleKey,
+    ) -> Site:
+        site.name = name
+        site.site_type = site_type
+        site.module_key = module_key
+        await self.session.flush()
+        return site

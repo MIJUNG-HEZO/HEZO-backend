@@ -18,6 +18,12 @@ class SiteCreateRequest(BaseModel):
     module_key: ModuleKey
 
 
+class SiteUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    site_type: SiteType
+    module_key: ModuleKey
+
+
 class SiteResponse(BaseModel):
     id: UUID
     name: str
