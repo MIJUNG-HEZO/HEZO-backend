@@ -9,7 +9,7 @@ from app.api.deps import (
     require_authenticated,
     require_email_verified,
 )
-from app.schemas.site import SiteCreateRequest, SiteListResponse, SiteResponse
+from app.schemas.site import SiteCreateRequest, SiteListResponse, SiteResponse, SiteUpdateRequest
 from app.services.site_service import SiteService
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
@@ -30,6 +30,20 @@ async def get_site(
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteResponse:
     return await site_service.get_site(user_id=current_user.id, site_id=site_id)
+
+
+@router.patch("/{site_id}", response_model=SiteResponse)
+async def update_site(
+    site_id: UUID,
+    payload: SiteUpdateRequest,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    site_service: Annotated[SiteService, Depends(get_site_service)],
+) -> SiteResponse:
+    return await site_service.update_site(
+        user_id=current_user.id,
+        site_id=site_id,
+        payload=payload,
+    )
 
 
 @router.post("", response_model=SiteResponse, status_code=status.HTTP_201_CREATED)

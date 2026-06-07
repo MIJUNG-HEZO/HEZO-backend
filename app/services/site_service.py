@@ -13,6 +13,7 @@ from app.schemas.site import (
     SiteCreateRequest,
     SiteListResponse,
     SiteResponse,
+    SiteUpdateRequest,
 )
 from app.services.plan_policy_service import PlanPolicyService
 
@@ -89,3 +90,49 @@ class SiteService:
             )
 
         return SiteResponse.model_validate(site)
+
+    async def update_site(
+        self,
+        *,
+        user_id: UUID,
+        site_id: UUID,
+        payload: SiteUpdateRequest,
+    ) -> SiteResponse:
+        expected_site_type = VALID_SITE_MODULE_PAIRS.get(payload.module_key)
+        if expected_site_type != payload.site_type:
+            raise AppException(
+                code=error_codes.INVALID_SITE_MODULE_COMBINATION,
+                message="Invalid site type and module key combination.",
+                status_code=400,
+                details={
+                    "module_key": payload.module_key,
+                    "site_type": payload.site_type,
+                    "expected_site_type": expected_site_type,
+                },
+            )
+
+        site = await self.site_repository.get_active_site_by_id_and_owner(
+            site_id=site_id,
+            owner_id=user_id,
+        )
+        if site is None:
+            raise AppException(
+                code=error_codes.SITE_NOT_FOUND,
+                message="Site was not found.",
+                status_code=404,
+            )
+
+        try:
+            updated_site = await self.site_repository.update_basic_info(
+                site=site,
+                name=payload.name,
+                site_type=payload.site_type,
+                module_key=payload.module_key,
+            )
+            await self.session.commit()
+            await self.session.refresh(updated_site)
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
+        return SiteResponse.model_validate(updated_site)
