@@ -67,6 +67,33 @@ PY
 True
 ```
 
+## 마이그레이션 실행
+
+SSH 터널을 실행하고 `.env`의 `DATABASE_URL`이 `localhost:15432`를 바라보는지 확인한 뒤 실행한다.
+처음 실행하거나 `uv.lock`이 변경된 경우 먼저 개발 의존성을 동기화한다.
+
+```bash
+uv sync --dev
+```
+
+마이그레이션을 최신 revision까지 적용한다.
+
+```bash
+uv run alembic upgrade head
+```
+
+현재 적용된 revision은 아래 명령으로 확인한다.
+
+```bash
+uv run alembic current
+```
+
+직전 migration을 되돌려야 할 때는 아래 명령을 사용한다.
+
+```bash
+uv run alembic downgrade -1
+```
+
 ## 주의 사항
 
 - EC2 보안그룹에서 PostgreSQL `5432` 포트를 전체 공개하지 않는다.
