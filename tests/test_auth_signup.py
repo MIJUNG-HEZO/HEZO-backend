@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_auth_service
+from app.api.v1 import auth as auth_router
 from app.core import error_codes
 from app.core.exceptions import AppException
 from app.main import app
@@ -207,8 +208,17 @@ def test_login_returns_access_token_and_sets_refresh_token_cookie() -> None:
     assert response.json() == {"access_token": "access-token", "token_type": "bearer"}
     assert response.cookies.get("refresh_token") == "refresh-token"
     assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api/v1/auth" in response.headers["set-cookie"]
     assert fake_auth_service.login_payload is not None
     assert fake_auth_service.login_payload.email == "user@example.com"
+
+
+def test_refresh_cookie_path_uses_configured_api_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_router.settings, "api_v1_prefix", "/custom-api/")
+
+    assert auth_router.get_refresh_token_cookie_path() == "/custom-api/auth"
 
 
 def test_auth_service_creates_user_with_hashed_password() -> None:

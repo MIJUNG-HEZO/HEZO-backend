@@ -10,6 +10,10 @@ from app.services.auth_service import AuthService
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
+def get_refresh_token_cookie_path() -> str:
+    return f"{settings.api_v1_prefix.rstrip('/')}/auth"
+
+
 @router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
 async def signup(
     payload: SignupRequest,
@@ -32,6 +36,6 @@ async def login(
         secure=settings.refresh_token_cookie_secure,
         samesite="lax",
         max_age=settings.refresh_token_expires_days * 24 * 60 * 60,
-        path="/api/v1/auth",
+        path=get_refresh_token_cookie_path(),
     )
     return login_response
