@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import error_codes
 from app.core.exceptions import AppException
 from app.db.session import get_db_session
+from app.services.auth_service import AuthService
 from app.services.site_service import SiteService
 
 
@@ -38,8 +39,13 @@ def get_site_service(session: Annotated[AsyncSession, Depends(get_db_session)]) 
     return SiteService(session)
 
 
+def get_auth_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> AuthService:
+    return AuthService(session)
+
+
 __all__ = [
     "CurrentUser",
+    "get_auth_service",
     "get_db_session",
     "get_site_service",
     "require_authenticated",
