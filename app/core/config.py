@@ -12,6 +12,24 @@ class Settings(BaseSettings):
     app_name: str = Field(default="HEZO API", alias="APP_NAME")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     database_url: str = Field(alias="DATABASE_URL")
+    jwt_secret: str = Field(alias="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    access_token_expires_minutes: int = Field(
+        default=15,
+        alias="ACCESS_TOKEN_EXPIRE_MINUTES",
+    )
+    refresh_token_expires_days: int = Field(
+        default=14,
+        alias="REFRESH_TOKEN_EXPIRE_DAYS",
+    )
+    refresh_token_cookie_name: str = Field(
+        default="refresh_token",
+        alias="REFRESH_TOKEN_COOKIE_NAME",
+    )
+    refresh_token_cookie_secure: bool = Field(
+        default=False,
+        alias="COOKIE_SECURE",
+    )
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
