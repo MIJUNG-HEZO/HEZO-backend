@@ -49,7 +49,7 @@
 APP_ENV=local
 APP_PORT=8080
 DATABASE_URL=postgresql://user:password@localhost:5432/hezo
-JWT_SECRET=change-me
+JWT_SECRET_KEY=change-me
 OAUTH_KAKAO_CLIENT_ID=your-client-id
 OAUTH_KAKAO_CLIENT_SECRET=your-client-secret
 ```
@@ -75,7 +75,7 @@ OAUTH_KAKAO_CLIENT_SECRET=your-client-secret
 ```env
 APP_PORT=8080
 DATABASE_URL=postgresql://user:password@localhost:5432/hezo
-JWT_SECRET=change-me
+JWT_SECRET_KEY=change-me
 KAKAO_CLIENT_ID=your-client-id
 KAKAO_CLIENT_SECRET=your-client-secret
 S3_BUCKET_NAME=hezo-dev
@@ -196,7 +196,7 @@ cp .env.example .env
 APP_ENV=local
 APP_PORT=8080
 DATABASE_URL=postgresql://user:password@localhost:5432/hezo
-JWT_SECRET=local-development-secret
+JWT_SECRET_KEY=local-development-secret
 ```
 
 ## 보안 사고 대응
