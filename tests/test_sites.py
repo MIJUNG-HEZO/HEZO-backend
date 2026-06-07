@@ -25,6 +25,7 @@ class FakeSiteService:
     def __init__(self) -> None:
         self.created_by_user_id: UUID | None = None
         self.listed_by_user_id: UUID | None = None
+        self.requested_site_id: UUID | None = None
 
     async def create_site(
         self,
@@ -78,6 +79,21 @@ class FakeSiteService:
             total=2,
         )
 
+    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse:
+        self.listed_by_user_id = user_id
+        self.requested_site_id = site_id
+        return SiteResponse(
+            id=site_id,
+            name="강남 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+            status=SiteStatus.DRAFT,
+            is_published=False,
+            published_at=None,
+            created_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+        )
+
 
 class FakeSubscription:
     def __init__(self, plan_id: UUID) -> None:
@@ -123,6 +139,23 @@ class FakeListSiteRepository:
         return self.sites
 
 
+class FakeDetailSiteRepository:
+    def __init__(self, site: SimpleNamespace | None) -> None:
+        self.site = site
+        self.site_id: UUID | None = None
+        self.owner_id: UUID | None = None
+
+    async def get_active_site_by_id_and_owner(
+        self,
+        *,
+        site_id: UUID,
+        owner_id: UUID,
+    ) -> SimpleNamespace | None:
+        self.site_id = site_id
+        self.owner_id = owner_id
+        return self.site
+
+
 def test_create_site_requires_authentication() -> None:
     client = TestClient(app)
 
@@ -148,6 +181,15 @@ def test_list_sites_requires_authentication() -> None:
     assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
 
 
+def test_get_site_requires_authentication() -> None:
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/sites/{uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
+
+
 def test_list_sites_returns_current_user_sites() -> None:
     current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
     fake_site_service = FakeSiteService()
@@ -168,6 +210,29 @@ def test_list_sites_returns_current_user_sites() -> None:
     assert body["items"][0]["name"] == "강남 한의원"
     assert body["items"][1]["name"] == "성수 맛집"
     assert fake_site_service.listed_by_user_id == current_user.id
+
+
+def test_get_site_returns_current_user_site() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(site_id)
+    assert body["name"] == "강남 한의원"
+    assert body["status"] == "draft"
+    assert fake_site_service.listed_by_user_id == current_user.id
+    assert fake_site_service.requested_site_id == site_id
 
 
 def test_create_site_returns_created_site() -> None:
@@ -270,6 +335,48 @@ def test_site_service_returns_site_list_response() -> None:
         assert site_service.site_repository.owner_id == user_id
 
     asyncio.run(run_list_sites())
+
+
+def test_site_service_returns_site_detail_response() -> None:
+    async def run_get_site() -> None:
+        user_id = uuid4()
+        site_id = uuid4()
+        site = SimpleNamespace(
+            id=site_id,
+            name="강남 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+            status=SiteStatus.DRAFT,
+            is_published=False,
+            published_at=None,
+            created_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+        )
+        site_service = SiteService(session=None)
+        site_service.site_repository = FakeDetailSiteRepository(site=site)
+
+        response = await site_service.get_site(user_id=user_id, site_id=site_id)
+
+        assert response.id == site_id
+        assert response.name == "강남 한의원"
+        assert site_service.site_repository.site_id == site_id
+        assert site_service.site_repository.owner_id == user_id
+
+    asyncio.run(run_get_site())
+
+
+def test_site_service_raises_site_not_found() -> None:
+    async def run_get_site() -> None:
+        site_service = SiteService(session=None)
+        site_service.site_repository = FakeDetailSiteRepository(site=None)
+
+        with pytest.raises(AppException) as exc_info:
+            await site_service.get_site(user_id=uuid4(), site_id=uuid4())
+
+        assert exc_info.value.code == error_codes.SITE_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_get_site())
 
 
 def test_plan_policy_blocks_site_creation_when_limit_is_exceeded() -> None:

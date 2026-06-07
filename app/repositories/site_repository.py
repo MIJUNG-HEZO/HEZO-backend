@@ -37,6 +37,21 @@ class SiteRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_active_site_by_id_and_owner(
+        self,
+        *,
+        site_id: UUID,
+        owner_id: UUID,
+    ) -> Site | None:
+        stmt = select(Site).where(
+            Site.id == site_id,
+            Site.owner_id == owner_id,
+            Site.deleted_at.is_(None),
+            Site.status != SiteStatus.DELETED,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def create(
         self,
         *,
