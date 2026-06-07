@@ -90,6 +90,29 @@ def test_require_authenticated_rejects_expired_access_token() -> None:
     asyncio.run(run_auth())
 
 
+def test_require_authenticated_rejects_access_token_without_expiration() -> None:
+    async def run_auth() -> None:
+        user = make_user()
+        now = datetime.now(UTC)
+        token = jwt.encode(
+            {
+                "sub": str(user.id),
+                "iat": int(now.timestamp()),
+                "type": "access",
+            },
+            settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await require_authenticated(make_credentials(token), FakeSession(user))
+
+        assert exc_info.value.code == error_codes.INVALID_TOKEN
+        assert exc_info.value.status_code == 401
+
+    asyncio.run(run_auth())
+
+
 def test_require_authenticated_rejects_refresh_token_type() -> None:
     async def run_auth() -> None:
         user = make_user()
