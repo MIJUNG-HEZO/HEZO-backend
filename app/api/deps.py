@@ -11,9 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import error_codes
 from app.core.exceptions import AppException
 from app.db.session import get_db_session
+from app.repositories.plan_repository import PlanRepository
+from app.repositories.site_repository import SiteRepository
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
+from app.services.plan_policy_service import PlanPolicyService
 from app.services.plan_service import PlanService
 from app.services.site_service import SiteService
 from app.services.subscription_service import SubscriptionService
@@ -116,6 +120,17 @@ def get_plan_service(session: Annotated[AsyncSession, Depends(get_db_session)]) 
     return PlanService(session)
 
 
+def get_plan_policy_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> PlanPolicyService:
+    site_repository = SiteRepository(session)
+    return PlanPolicyService(
+        plan_repository=PlanRepository(session),
+        subscription_repository=SubscriptionRepository(session),
+        site_repository=site_repository,
+    )
+
+
 def get_subscription_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> SubscriptionService:
@@ -127,6 +142,7 @@ __all__ = [
     "get_auth_service",
     "get_db_session",
     "get_email_verification_service",
+    "get_plan_policy_service",
     "get_plan_service",
     "get_site_service",
     "get_subscription_service",

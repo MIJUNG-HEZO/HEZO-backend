@@ -14,3 +14,21 @@ class PlanResponse(BaseModel):
 
 class PlanListResponse(BaseModel):
     items: list[PlanResponse]
+
+
+class PlanUsagePlan(BaseModel):
+    code: str
+    name: str
+
+
+class PlanUsageDetail(BaseModel):
+    max_sites: int
+    used_sites: int
+    remaining_sites: int
+    can_create_site: bool
+    can_publish: bool
+
+
+class PlanUsageResponse(BaseModel):
+    plan: PlanUsagePlan
+    usage: PlanUsageDetail
