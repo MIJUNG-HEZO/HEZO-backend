@@ -39,6 +39,16 @@ class FakeAuthService:
         self.login_payload = payload
         return LoginResponse(access_token="access-token"), "refresh-token"
 
+    async def refresh(self, refresh_token: str) -> tuple[LoginResponse, str]:
+        return LoginResponse(access_token=f"access-token-for-{refresh_token}"), "new-refresh-token"
+
+    def raise_invalid_refresh_token(self) -> None:
+        raise AppException(
+            code=error_codes.INVALID_REFRESH_TOKEN,
+            message="Invalid refresh token.",
+            status_code=401,
+        )
+
 
 class FakeSession:
     def __init__(self) -> None:
@@ -65,8 +75,13 @@ class FakeUserRepository:
         self.existing_user = existing_user
         self.create_error = create_error
         self.created_user: SimpleNamespace | None = None
+        self.locked_user_id: UUID | None = None
 
     async def get_by_email(self, email: str) -> SimpleNamespace | None:
+        return self.existing_user
+
+    async def get_by_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
+        self.locked_user_id = user_id
         return self.existing_user
 
     async def create(
@@ -126,10 +141,29 @@ class FakeSubscriptionRepository:
 
 
 class FakeRefreshTokenRepository:
-    def __init__(self) -> None:
+    def __init__(self, stored_refresh_token: SimpleNamespace | None = None) -> None:
+        self.stored_refresh_token = stored_refresh_token
         self.user_id: UUID | None = None
         self.token_hash: str | None = None
         self.expires_at: datetime | None = None
+        self.requested_token_hash: str | None = None
+        self.revoked_token_id: UUID | None = None
+        self.revoked_at: datetime | None = None
+
+    async def get_by_token_hash_for_update(self, token_hash: str) -> SimpleNamespace | None:
+        self.requested_token_hash = token_hash
+        return self.stored_refresh_token
+
+    async def revoke(
+        self,
+        refresh_token: SimpleNamespace,
+        *,
+        revoked_at: datetime,
+    ) -> SimpleNamespace:
+        self.revoked_token_id = refresh_token.id
+        self.revoked_at = revoked_at
+        refresh_token.revoked_at = revoked_at
+        return refresh_token
 
     async def create(
         self,
@@ -172,7 +206,7 @@ class FakeTokenService:
         return f"hashed-{refresh_token}"
 
     def get_refresh_token_expires_at(self) -> datetime:
-        return datetime(2026, 6, 21, tzinfo=UTC)
+        return datetime(2099, 1, 1, tzinfo=UTC)
 
 
 def test_signup_returns_created_user_without_sensitive_fields() -> None:
@@ -244,6 +278,41 @@ def test_login_returns_access_token_and_sets_refresh_token_cookie() -> None:
     assert "Path=/api/v1/auth" in response.headers["set-cookie"]
     assert fake_auth_service.login_payload is not None
     assert fake_auth_service.login_payload.email == "user@example.com"
+
+
+def test_refresh_rotates_refresh_token_cookie() -> None:
+    fake_auth_service = FakeAuthService()
+    app.dependency_overrides[get_auth_service] = lambda: fake_auth_service
+
+    try:
+        client = TestClient(app)
+        client.cookies.set("refresh_token", "refresh-token")
+        response = client.post("/api/v1/auth/refresh")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "access_token": "access-token-for-refresh-token",
+        "token_type": "bearer",
+    }
+    assert response.cookies.get("refresh_token") == "new-refresh-token"
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api/v1/auth" in response.headers["set-cookie"]
+
+
+def test_refresh_rejects_missing_refresh_token_cookie() -> None:
+    fake_auth_service = FakeAuthService()
+    app.dependency_overrides[get_auth_service] = lambda: fake_auth_service
+
+    try:
+        client = TestClient(app)
+        response = client.post("/api/v1/auth/refresh")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.INVALID_REFRESH_TOKEN
 
 
 def test_refresh_cookie_path_uses_configured_api_prefix(
@@ -352,12 +421,126 @@ def test_auth_service_login_creates_tokens_and_stores_refresh_token_hash() -> No
         assert refresh_token == "refresh-token"
         assert refresh_token_repository.user_id == user_id
         assert refresh_token_repository.token_hash == "hashed-refresh-token"
-        assert refresh_token_repository.expires_at == datetime(2026, 6, 21, tzinfo=UTC)
+        assert refresh_token_repository.expires_at == datetime(2099, 1, 1, tzinfo=UTC)
         assert password_service.verified_password == "safe-password"
         assert password_service.verified_hash == "argon2id-hash"
         assert session.committed is True
 
     asyncio.run(run_login())
+
+
+def test_auth_service_refresh_rotates_refresh_token() -> None:
+    async def run_refresh() -> None:
+        user_id = uuid4()
+        refresh_token_row = SimpleNamespace(
+            id=uuid4(),
+            user_id=user_id,
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            revoked_at=None,
+        )
+        session = FakeSession()
+        user_repository = FakeUserRepository(
+            existing_user=SimpleNamespace(
+                id=user_id,
+                deleted_at=None,
+            )
+        )
+        refresh_token_repository = FakeRefreshTokenRepository(
+            stored_refresh_token=refresh_token_row,
+        )
+        auth_service = AuthService(
+            session=session,
+            user_repository=user_repository,
+            refresh_token_repository=refresh_token_repository,
+            token_service=FakeTokenService(),
+        )
+
+        refresh_response, new_refresh_token = await auth_service.refresh("refresh-token")
+
+        assert refresh_response.access_token == f"access-token-for-{user_id}"
+        assert new_refresh_token == "refresh-token"
+        assert refresh_token_repository.requested_token_hash == "hashed-refresh-token"
+        assert refresh_token_repository.revoked_token_id == refresh_token_row.id
+        assert refresh_token_repository.revoked_at is not None
+        assert refresh_token_repository.user_id == user_id
+        assert refresh_token_repository.token_hash == "hashed-refresh-token"
+        assert refresh_token_repository.expires_at == datetime(2099, 1, 1, tzinfo=UTC)
+        assert user_repository.locked_user_id == user_id
+        assert session.committed is True
+        assert session.rolled_back is False
+
+    asyncio.run(run_refresh())
+
+
+@pytest.mark.parametrize(
+    "stored_refresh_token",
+    [
+        None,
+        SimpleNamespace(
+            id=uuid4(),
+            user_id=uuid4(),
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            revoked_at=datetime(2026, 6, 8, tzinfo=UTC),
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            user_id=uuid4(),
+            expires_at=datetime(2026, 6, 1, tzinfo=UTC),
+            revoked_at=None,
+        ),
+    ],
+)
+def test_auth_service_refresh_rejects_invalid_refresh_token(
+    stored_refresh_token: SimpleNamespace | None,
+) -> None:
+    async def run_refresh() -> None:
+        session = FakeSession()
+        auth_service = AuthService(
+            session=session,
+            user_repository=FakeUserRepository(
+                existing_user=SimpleNamespace(id=uuid4(), deleted_at=None)
+            ),
+            refresh_token_repository=FakeRefreshTokenRepository(
+                stored_refresh_token=stored_refresh_token,
+            ),
+            token_service=FakeTokenService(),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.refresh("refresh-token")
+
+        assert exc_info.value.code == error_codes.INVALID_REFRESH_TOKEN
+        assert exc_info.value.status_code == 401
+        assert session.committed is False
+
+    asyncio.run(run_refresh())
+
+
+def test_auth_service_refresh_rejects_missing_user() -> None:
+    async def run_refresh() -> None:
+        session = FakeSession()
+        auth_service = AuthService(
+            session=session,
+            user_repository=FakeUserRepository(existing_user=None),
+            refresh_token_repository=FakeRefreshTokenRepository(
+                stored_refresh_token=SimpleNamespace(
+                    id=uuid4(),
+                    user_id=uuid4(),
+                    expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                    revoked_at=None,
+                ),
+            ),
+            token_service=FakeTokenService(),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.refresh("refresh-token")
+
+        assert exc_info.value.code == error_codes.INVALID_REFRESH_TOKEN
+        assert exc_info.value.status_code == 401
+        assert session.committed is False
+
+    asyncio.run(run_refresh())
 
 
 def test_auth_service_login_rejects_invalid_credentials() -> None:

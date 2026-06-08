@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,3 +113,46 @@ class AuthService:
             raise
 
         return LoginResponse(access_token=access_token), refresh_token
+
+    async def refresh(self, refresh_token: str) -> tuple[LoginResponse, str]:
+        now = datetime.now(UTC)
+        refresh_token_hash = self.token_service.hash_refresh_token(refresh_token)
+        stored_refresh_token = await self.refresh_token_repository.get_by_token_hash_for_update(
+            refresh_token_hash
+        )
+        if (
+            stored_refresh_token is None
+            or stored_refresh_token.revoked_at is not None
+            or stored_refresh_token.expires_at <= now
+        ):
+            self.raise_invalid_refresh_token()
+
+        user = await self.user_repository.get_by_id_for_update(stored_refresh_token.user_id)
+        if user is None or user.deleted_at is not None:
+            self.raise_invalid_refresh_token()
+
+        new_access_token = self.token_service.create_access_token(user_id=user.id)
+        new_refresh_token = self.token_service.create_refresh_token()
+        new_refresh_token_hash = self.token_service.hash_refresh_token(new_refresh_token)
+        new_refresh_token_expires_at = self.token_service.get_refresh_token_expires_at()
+
+        try:
+            await self.refresh_token_repository.revoke(stored_refresh_token, revoked_at=now)
+            await self.refresh_token_repository.create(
+                user_id=user.id,
+                token_hash=new_refresh_token_hash,
+                expires_at=new_refresh_token_expires_at,
+            )
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
+        return LoginResponse(access_token=new_access_token), new_refresh_token
+
+    def raise_invalid_refresh_token(self) -> None:
+        raise AppException(
+            code=error_codes.INVALID_REFRESH_TOKEN,
+            message="Invalid refresh token.",
+            status_code=401,
+        )
