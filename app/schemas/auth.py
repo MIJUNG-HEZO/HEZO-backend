@@ -61,6 +61,46 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class KakaoOAuthLoginRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    redirect_uri: str = Field(min_length=1, max_length=512)
+
+    @field_validator("code", "redirect_uri", mode="before")
+    @classmethod
+    def strip_oauth_value(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+
+class OAuthLoginResponse(BaseModel):
+    signup_required: bool
+    access_token: str | None = None
+    token_type: str = "bearer"
+    signup_token: str | None = None
+    provider: str | None = None
+    suggested_email: str | None = None
+    suggested_name: str | None = None
+
+
+class OAuthCompleteSignupRequest(BaseModel):
+    signup_token: str = Field(min_length=1, max_length=2048)
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("signup_token", "name", mode="before")
+    @classmethod
+    def strip_complete_signup_value(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+    @field_validator("email")
+    @classmethod
+    def normalize_complete_signup_email(cls, email: EmailStr) -> str:
+        return str(email).lower()
+
+
 class EmailVerificationRequestResponse(BaseModel):
     expires_at: datetime
     verification_url: str | None = None

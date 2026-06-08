@@ -35,7 +35,7 @@ class UserRepository:
         self,
         *,
         email: str,
-        password_hash: str,
+        password_hash: str | None,
         name: str,
         phone: str | None,
     ) -> User:
