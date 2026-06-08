@@ -136,3 +136,22 @@ class SiteService:
             raise
 
         return SiteResponse.model_validate(updated_site)
+
+    async def delete_site(self, *, user_id: UUID, site_id: UUID) -> None:
+        site = await self.site_repository.get_active_site_by_id_and_owner(
+            site_id=site_id,
+            owner_id=user_id,
+        )
+        if site is None:
+            raise AppException(
+                code=error_codes.SITE_NOT_FOUND,
+                message="Site was not found.",
+                status_code=404,
+            )
+
+        try:
+            await self.site_repository.soft_delete(site=site)
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
