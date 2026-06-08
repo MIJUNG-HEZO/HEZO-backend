@@ -64,7 +64,7 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
 
 
-class KakaoOAuthLoginRequest(BaseModel):
+class OAuthProviderLoginRequest(BaseModel):
     code: str = Field(min_length=1, max_length=2048)
     redirect_uri: str = Field(min_length=1, max_length=512)
 
@@ -74,6 +74,14 @@ class KakaoOAuthLoginRequest(BaseModel):
         if not isinstance(value, str):
             return value
         return value.strip()
+
+
+class KakaoOAuthLoginRequest(OAuthProviderLoginRequest):
+    pass
+
+
+class NaverOAuthLoginRequest(OAuthProviderLoginRequest):
+    pass
 
 
 class OAuthLoginResponse(BaseModel):

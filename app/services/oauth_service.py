@@ -5,13 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import error_codes
 from app.core.exceptions import AppException
 from app.integrations.oauth.kakao_oauth_client import KakaoOAuthClient
+from app.integrations.oauth.naver_oauth_client import NaverOAuthClient
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.social_account_repository import SocialAccountRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.auth import KakaoOAuthLoginRequest, OAuthCompleteSignupRequest, OAuthLoginResponse
+from app.schemas.auth import (
+    KakaoOAuthLoginRequest,
+    NaverOAuthLoginRequest,
+    OAuthCompleteSignupRequest,
+    OAuthLoginResponse,
+)
 from app.services.token_service import TokenService
+
+SUPPORTED_OAUTH_PROVIDERS = frozenset({"kakao", "naver"})
 
 
 class OAuthService:
@@ -19,6 +27,7 @@ class OAuthService:
         self,
         session: AsyncSession,
         kakao_oauth_client: KakaoOAuthClient | None = None,
+        naver_oauth_client: NaverOAuthClient | None = None,
         social_account_repository: SocialAccountRepository | None = None,
         user_repository: UserRepository | None = None,
         plan_repository: PlanRepository | None = None,
@@ -28,6 +37,7 @@ class OAuthService:
     ) -> None:
         self.session = session
         self.kakao_oauth_client = kakao_oauth_client or KakaoOAuthClient()
+        self.naver_oauth_client = naver_oauth_client or NaverOAuthClient()
         self.social_account_repository = social_account_repository or SocialAccountRepository(
             session
         )
@@ -45,25 +55,55 @@ class OAuthService:
             code=payload.code,
             redirect_uri=payload.redirect_uri,
         )
-        social_account = await self.social_account_repository.get_by_provider_user_id(
+        return await self._login_with_provider(
             provider="kakao",
             provider_user_id=kakao_user.provider_user_id,
+            email=kakao_user.email,
+            name=kakao_user.name,
+        )
+
+    async def login_with_naver(
+        self,
+        payload: NaverOAuthLoginRequest,
+    ) -> tuple[OAuthLoginResponse, str | None]:
+        naver_user = await self.naver_oauth_client.get_user_info_by_code(
+            code=payload.code,
+            redirect_uri=payload.redirect_uri,
+        )
+        return await self._login_with_provider(
+            provider="naver",
+            provider_user_id=naver_user.provider_user_id,
+            email=naver_user.email,
+            name=naver_user.name,
+        )
+
+    async def _login_with_provider(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        email: str | None,
+        name: str | None,
+    ) -> tuple[OAuthLoginResponse, str | None]:
+        social_account = await self.social_account_repository.get_by_provider_user_id(
+            provider=provider,
+            provider_user_id=provider_user_id,
         )
 
         if social_account is None:
             signup_token = self.token_service.create_oauth_signup_token(
-                provider="kakao",
-                provider_user_id=kakao_user.provider_user_id,
-                email=kakao_user.email,
-                name=kakao_user.name,
+                provider=provider,
+                provider_user_id=provider_user_id,
+                email=email,
+                name=name,
             )
             return (
                 OAuthLoginResponse(
                     signup_required=True,
                     signup_token=signup_token,
-                    provider="kakao",
-                    suggested_email=kakao_user.email,
-                    suggested_name=kakao_user.name,
+                    provider=provider,
+                    suggested_email=email,
+                    suggested_name=name,
                 ),
                 None,
             )
@@ -72,7 +112,7 @@ class OAuthService:
         if user is None or user.deleted_at is not None:
             raise AppException(
                 code=error_codes.UNAUTHORIZED,
-                message="Connected Kakao account user is not available.",
+                message="Connected social account user is not available.",
                 status_code=401,
             )
 
@@ -182,7 +222,7 @@ class OAuthService:
 
         provider = payload.get("provider")
         provider_user_id = payload.get("sub")
-        if provider != "kakao" or not isinstance(provider_user_id, str):
+        if provider not in SUPPORTED_OAUTH_PROVIDERS or not isinstance(provider_user_id, str):
             raise AppException(
                 code=error_codes.INVALID_OAUTH_SIGNUP_TOKEN,
                 message="Invalid OAuth signup token.",
