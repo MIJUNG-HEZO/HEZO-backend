@@ -36,3 +36,13 @@ class PaymentRequestRepository:
         self.session.add(payment_request)
         await self.session.flush()
         return payment_request
+
+    async def update_pg_request_id(
+        self,
+        payment_request: PaymentRequest,
+        *,
+        pg_request_id: str,
+    ) -> PaymentRequest:
+        payment_request.pg_request_id = pg_request_id
+        await self.session.flush()
+        return payment_request
