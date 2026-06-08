@@ -30,6 +30,14 @@ class Settings(BaseSettings):
         default=False,
         alias="COOKIE_SECURE",
     )
+    frontend_base_url: str = Field(
+        default="http://localhost:3000",
+        alias="FRONTEND_BASE_URL",
+    )
+    email_verification_token_expires_minutes: int = Field(
+        default=30,
+        alias="EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES",
+    )
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

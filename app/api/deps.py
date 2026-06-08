@@ -13,6 +13,7 @@ from app.core.exceptions import AppException
 from app.db.session import get_db_session
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.email_verification_service import EmailVerificationService
 from app.services.plan_service import PlanService
 from app.services.site_service import SiteService
 from app.services.subscription_service import SubscriptionService
@@ -105,6 +106,12 @@ def get_auth_service(session: Annotated[AsyncSession, Depends(get_db_session)]) 
     return AuthService(session)
 
 
+def get_email_verification_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> EmailVerificationService:
+    return EmailVerificationService(session)
+
+
 def get_plan_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> PlanService:
     return PlanService(session)
 
@@ -119,6 +126,7 @@ __all__ = [
     "CurrentUser",
     "get_auth_service",
     "get_db_session",
+    "get_email_verification_service",
     "get_plan_service",
     "get_site_service",
     "get_subscription_service",

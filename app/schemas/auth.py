@@ -59,3 +59,8 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class EmailVerificationRequestResponse(BaseModel):
+    expires_at: datetime
+    verification_url: str | None = None
