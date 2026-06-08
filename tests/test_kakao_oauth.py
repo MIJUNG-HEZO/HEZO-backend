@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -192,7 +193,7 @@ class FakeTokenService:
 
     def decode_oauth_signup_token(self, token: str) -> dict:
         if token == "invalid-signup-token":
-            raise Exception("invalid token")
+            raise jwt.InvalidTokenError("invalid token")
         return self.decoded_payload
 
 
@@ -474,6 +475,36 @@ def test_oauth_service_complete_signup_rejects_duplicate_email() -> None:
         assert exc_info.value.code == error_codes.EMAIL_ALREADY_EXISTS
         assert exc_info.value.status_code == 409
         assert session.committed is False
+
+    asyncio.run(run_complete_signup())
+
+
+def test_oauth_service_complete_signup_rejects_invalid_signup_token() -> None:
+    async def run_complete_signup() -> None:
+        oauth_service = OAuthService(
+            session=FakeSession(),
+            kakao_oauth_client=FakeKakaoOAuthClient(
+                KakaoUserInfo(provider_user_id="12345", email=None, name=None)
+            ),
+            social_account_repository=FakeSocialAccountRepository(social_account=None),
+            user_repository=FakeUserRepository(),
+            plan_repository=FakePlanRepository(),
+            subscription_repository=FakeSubscriptionRepository(),
+            refresh_token_repository=FakeRefreshTokenRepository(),
+            token_service=FakeTokenService(),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await oauth_service.complete_signup(
+                OAuthCompleteSignupRequest(
+                    signup_token="invalid-signup-token",
+                    email="user@example.com",
+                    name="해조",
+                )
+            )
+
+        assert exc_info.value.code == error_codes.INVALID_OAUTH_SIGNUP_TOKEN
+        assert exc_info.value.status_code == 401
 
     asyncio.run(run_complete_signup())
 

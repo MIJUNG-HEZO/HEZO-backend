@@ -50,7 +50,7 @@ class KakaoOAuthClient:
             raise AppException(
                 code=error_codes.OAUTH_PROVIDER_ERROR,
                 message="Failed to exchange Kakao authorization code.",
-                status_code=400,
+                status_code=400 if response.status_code < 500 else 502,
             )
 
         payload = response.json()
@@ -72,7 +72,7 @@ class KakaoOAuthClient:
             raise AppException(
                 code=error_codes.OAUTH_PROVIDER_ERROR,
                 message="Failed to fetch Kakao user info.",
-                status_code=400,
+                status_code=502,
             )
 
         return self._parse_user_info(response.json())
