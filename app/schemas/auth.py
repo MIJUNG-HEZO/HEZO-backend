@@ -1,8 +1,11 @@
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+(?:[ A-Za-z가-힣]*[A-Za-z가-힣])?$")
 
 
 class SignupRequest(BaseModel):
@@ -99,6 +102,13 @@ class OAuthCompleteSignupRequest(BaseModel):
     @classmethod
     def normalize_complete_signup_email(cls, email: EmailStr) -> str:
         return str(email).lower()
+
+    @field_validator("name")
+    @classmethod
+    def validate_complete_signup_name(cls, name: str) -> str:
+        if not NAME_PATTERN.fullmatch(name):
+            raise ValueError("Name can contain only Korean or English letters.")
+        return name
 
 
 class EmailVerificationRequestResponse(BaseModel):

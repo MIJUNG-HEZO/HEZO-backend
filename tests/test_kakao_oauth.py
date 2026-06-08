@@ -328,6 +328,36 @@ def test_complete_oauth_signup_route_sets_refresh_token_cookie() -> None:
     assert fake_oauth_service.complete_signup_payload.name == "해조"
 
 
+def test_complete_oauth_signup_route_rejects_invalid_email_format() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/auth/oauth/complete-signup",
+        json={
+            "signup_token": "signup-token",
+            "email": "not-an-email",
+            "name": "해조",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_complete_oauth_signup_route_rejects_name_with_number() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/auth/oauth/complete-signup",
+        json={
+            "signup_token": "signup-token",
+            "email": "user@example.com",
+            "name": "해조123",
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_oauth_service_returns_signup_token_for_new_kakao_account() -> None:
     async def run_login() -> None:
         kakao_client = FakeKakaoOAuthClient(
