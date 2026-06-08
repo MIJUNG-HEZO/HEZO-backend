@@ -35,7 +35,7 @@ class EmailVerificationService:
         )
 
     async def request_verification_email(self, *, user_id: UUID) -> EmailVerificationRequestResult:
-        user = await self.user_repository.get_by_id(user_id)
+        user = await self.user_repository.get_by_id_for_update(user_id)
         if user is None or user.deleted_at is not None:
             raise AppException(
                 code=error_codes.UNAUTHORIZED,

@@ -33,9 +33,14 @@ class FakeUserRepository:
     def __init__(self, user: SimpleNamespace | None) -> None:
         self.user = user
         self.requested_user_id: UUID | None = None
+        self.locked_user_id: UUID | None = None
 
     async def get_by_id(self, user_id: UUID) -> SimpleNamespace | None:
         self.requested_user_id = user_id
+        return self.user
+
+    async def get_by_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
+        self.locked_user_id = user_id
         return self.user
 
 
@@ -123,7 +128,8 @@ def test_email_verification_service_creates_hashed_token_and_revokes_existing_to
 
         result = await service.request_verification_email(user_id=user.id)
 
-        assert user_repository.requested_user_id == user.id
+        assert user_repository.locked_user_id == user.id
+        assert user_repository.requested_user_id is None
         assert token_repository.revoked_user_id == user.id
         assert token_repository.revoked_at is not None
         assert token_repository.created_user_id == user.id
