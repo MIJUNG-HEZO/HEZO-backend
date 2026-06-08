@@ -1,17 +1,24 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
+from app.core.config import settings
 from app.core.enums import PaymentProvider, PaymentRequestStatus
 from app.core.exceptions import AppException
 from app.integrations.payments.toss_payments_client import TossPaymentsClient
 from app.repositories.billing_event_repository import BillingEventRepository
 from app.repositories.payment_request_repository import PaymentRequestRepository
 from app.repositories.plan_repository import PlanRepository
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.billing import BillingCheckoutRequest, BillingCheckoutResponse
+from app.schemas.billing import (
+    BillingCheckoutRequest,
+    BillingCheckoutResponse,
+    MockPaymentApprovalResponse,
+)
 
 
 class BillingService:
@@ -22,7 +29,9 @@ class BillingService:
         user_repository: UserRepository | None = None,
         payment_request_repository: PaymentRequestRepository | None = None,
         billing_event_repository: BillingEventRepository | None = None,
+        subscription_repository: SubscriptionRepository | None = None,
         toss_payments_client: TossPaymentsClient | None = None,
+        app_env: str | None = None,
     ) -> None:
         self.session = session
         self.plan_repository = plan_repository or PlanRepository(session)
@@ -31,7 +40,9 @@ class BillingService:
             session
         )
         self.billing_event_repository = billing_event_repository or BillingEventRepository(session)
+        self.subscription_repository = subscription_repository or SubscriptionRepository(session)
         self.toss_payments_client = toss_payments_client or TossPaymentsClient()
+        self.app_env = (app_env or settings.app_env).lower()
 
     async def create_checkout(
         self,
@@ -120,4 +131,125 @@ class BillingService:
             currency=payment_request.currency,
             status=payment_request.status,
             payment_params=payment_params,
+        )
+
+    async def mock_approve(
+        self,
+        *,
+        user_id: UUID,
+        payment_request_id: UUID,
+    ) -> MockPaymentApprovalResponse:
+        if self.app_env not in {"local", "development", "test"}:
+            raise AppException(
+                code=error_codes.FORBIDDEN,
+                message="Mock payment approval is available only in development.",
+                status_code=403,
+            )
+
+        try:
+            payment_request = await self.payment_request_repository.get_by_id_for_update(
+                payment_request_id
+            )
+            if payment_request is None:
+                raise AppException(
+                    code=error_codes.PAYMENT_REQUEST_NOT_FOUND,
+                    message="Payment request not found.",
+                    status_code=404,
+                )
+            if payment_request.user_id != user_id:
+                raise AppException(
+                    code=error_codes.FORBIDDEN,
+                    message="Payment request does not belong to the current user.",
+                    status_code=403,
+                )
+            if payment_request.status == PaymentRequestStatus.APPROVED:
+                raise AppException(
+                    code=error_codes.PAYMENT_ALREADY_APPROVED,
+                    message="Payment request is already approved.",
+                    status_code=409,
+                )
+            if payment_request.status not in {
+                PaymentRequestStatus.REQUESTED,
+                PaymentRequestStatus.PENDING,
+            }:
+                raise AppException(
+                    code=error_codes.PAYMENT_STATUS_NOT_APPROVABLE,
+                    message="Payment request status cannot be approved.",
+                    status_code=409,
+                    details={"status": payment_request.status.value},
+                )
+
+            plan = await self.plan_repository.get_by_id(payment_request.plan_id)
+            if plan is None:
+                raise AppException(
+                    code=error_codes.PLAN_NOT_FOUND,
+                    message="Plan not found.",
+                    status_code=404,
+                )
+            if not plan.is_active:
+                raise AppException(
+                    code=error_codes.PLAN_NOT_ACTIVE,
+                    message="Plan is not active.",
+                    status_code=400,
+                    details={"plan_code": plan.code},
+                )
+            if plan.code == "FREE" or plan.price_monthly <= 0:
+                raise AppException(
+                    code=error_codes.FREE_PLAN_CANNOT_CHECKOUT,
+                    message="Free plan cannot be approved as a payment.",
+                    status_code=400,
+                    details={"plan_code": plan.code},
+                )
+
+            subscription = await self.subscription_repository.get_active_by_user_id_for_update(
+                user_id
+            )
+            if subscription is None:
+                raise AppException(
+                    code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                    message="Active subscription was not found.",
+                    status_code=404,
+                )
+
+            previous_plan = await self.plan_repository.get_by_id(subscription.plan_id)
+            if previous_plan is None:
+                raise AppException(
+                    code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                    message="Active subscription plan was not found.",
+                    status_code=404,
+                )
+
+            approved_at = datetime.now(UTC)
+            await self.payment_request_repository.mark_approved(payment_request)
+            await self.subscription_repository.change_plan(
+                subscription,
+                plan_id=plan.id,
+                started_at=approved_at,
+            )
+            await self.billing_event_repository.create(
+                user_id=user_id,
+                payment_request_id=payment_request.id,
+                event_type="mock_payment_approved",
+                payload_json={
+                    "mock": True,
+                    "previous_plan_code": previous_plan.code,
+                    "new_plan_code": plan.code,
+                    "amount": payment_request.amount,
+                    "currency": payment_request.currency,
+                },
+            )
+            await self.session.commit()
+        except AppException:
+            await self.session.rollback()
+            raise
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
+        return MockPaymentApprovalResponse(
+            payment_request_id=payment_request.id,
+            payment_status=payment_request.status,
+            previous_plan_code=previous_plan.code,
+            current_plan_code=plan.code,
+            subscription_status=subscription.status,
         )

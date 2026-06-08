@@ -67,3 +67,24 @@ def test_payment_request_repository_allows_explicit_provider_and_status() -> Non
         assert payment_request.amount == 99000
 
     asyncio.run(run_create())
+
+
+def test_payment_request_repository_marks_payment_as_approved() -> None:
+    async def run_mark_approved() -> None:
+        session = FakeSession()
+        repository = PaymentRequestRepository(session=session)
+        payment_request = PaymentRequest(
+            user_id=uuid4(),
+            plan_id=uuid4(),
+            amount=29000,
+            currency="KRW",
+            status=PaymentRequestStatus.REQUESTED,
+        )
+
+        result = await repository.mark_approved(payment_request)
+
+        assert result is payment_request
+        assert payment_request.status == PaymentRequestStatus.APPROVED
+        assert session.flushed is True
+
+    asyncio.run(run_mark_approved())

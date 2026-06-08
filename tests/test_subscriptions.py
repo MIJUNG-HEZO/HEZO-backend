@@ -15,6 +15,7 @@ from app.core import error_codes
 from app.core.enums import SubscriptionStatus
 from app.core.exceptions import AppException
 from app.main import app
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.schemas.subscription import MySubscriptionResponse, SubscriptionResponse
 from app.services.subscription_service import SubscriptionService
 
@@ -62,6 +63,14 @@ class FakePlanRepository:
     async def get_by_id(self, plan_id: UUID) -> SimpleNamespace | None:
         self.plan_id = plan_id
         return self.plan
+
+
+class FakeWriteSession:
+    def __init__(self) -> None:
+        self.flushed = False
+
+    async def flush(self) -> None:
+        self.flushed = True
 
 
 def test_get_my_subscription_requires_authentication() -> None:
@@ -166,3 +175,34 @@ def test_subscription_service_raises_when_plan_is_missing() -> None:
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_get_my_subscription())
+
+
+def test_subscription_repository_changes_active_plan() -> None:
+    async def run_change_plan() -> None:
+        session = FakeWriteSession()
+        repository = SubscriptionRepository(session=session)
+        started_at = datetime.now(UTC)
+        new_plan_id = uuid4()
+        subscription = SimpleNamespace(
+            plan_id=uuid4(),
+            status=SubscriptionStatus.PAST_DUE,
+            started_at=datetime(2026, 6, 7, tzinfo=UTC),
+            ended_at=datetime.now(UTC),
+            renewed_at=datetime.now(UTC),
+        )
+
+        result = await repository.change_plan(
+            subscription,
+            plan_id=new_plan_id,
+            started_at=started_at,
+        )
+
+        assert result is subscription
+        assert subscription.plan_id == new_plan_id
+        assert subscription.status == SubscriptionStatus.ACTIVE
+        assert subscription.started_at == started_at
+        assert subscription.ended_at is None
+        assert subscription.renewed_at is None
+        assert session.flushed is True
+
+    asyncio.run(run_change_plan())

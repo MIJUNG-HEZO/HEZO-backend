@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.core.enums import PaymentProvider, PaymentRequestStatus
+from app.core.enums import PaymentProvider, PaymentRequestStatus, SubscriptionStatus
 
 
 class BillingCheckoutRequest(BaseModel):
@@ -18,3 +18,11 @@ class BillingCheckoutResponse(BaseModel):
     currency: str
     status: PaymentRequestStatus
     payment_params: dict[str, Any]
+
+
+class MockPaymentApprovalResponse(BaseModel):
+    payment_request_id: UUID
+    payment_status: PaymentRequestStatus
+    previous_plan_code: str
+    current_plan_code: str
+    subscription_status: SubscriptionStatus
