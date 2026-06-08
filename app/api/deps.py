@@ -16,6 +16,7 @@ from app.repositories.site_repository import SiteRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.billing_service import BillingService
 from app.services.email_verification_service import EmailVerificationService
 from app.services.oauth_service import OAuthService
 from app.services.plan_policy_service import PlanPolicyService
@@ -142,9 +143,16 @@ def get_subscription_service(
     return SubscriptionService(session)
 
 
+def get_billing_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> BillingService:
+    return BillingService(session)
+
+
 __all__ = [
     "CurrentUser",
     "get_auth_service",
+    "get_billing_service",
     "get_db_session",
     "get_email_verification_service",
     "get_oauth_service",
