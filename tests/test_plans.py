@@ -286,3 +286,80 @@ def test_plan_policy_service_usage_raises_when_plan_is_missing() -> None:
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_get_usage())
+
+
+def test_plan_policy_allows_site_creation_when_usage_is_below_limit() -> None:
+    async def run_policy_check() -> None:
+        user_id = uuid4()
+        plan_id = uuid4()
+        plan_policy_service = PlanPolicyService(
+            plan_repository=FakePolicyPlanRepository(plan=SimpleNamespace(max_sites=2)),
+            subscription_repository=FakePolicySubscriptionRepository(
+                subscription=SimpleNamespace(plan_id=plan_id)
+            ),
+            site_repository=FakePolicySiteRepository(used_sites=1),
+        )
+
+        await plan_policy_service.require_can_create_site(user_id)
+
+        assert plan_policy_service.subscription_repository.user_id == user_id
+        assert plan_policy_service.plan_repository.plan_id == plan_id
+        assert plan_policy_service.site_repository.owner_id == user_id
+
+    asyncio.run(run_policy_check())
+
+
+def test_plan_policy_rejects_site_creation_without_active_subscription() -> None:
+    async def run_policy_check() -> None:
+        plan_policy_service = PlanPolicyService(
+            plan_repository=FakePolicyPlanRepository(plan=None),
+            subscription_repository=FakePolicySubscriptionRepository(subscription=None),
+            site_repository=FakePolicySiteRepository(used_sites=0),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await plan_policy_service.require_can_create_site(uuid4())
+
+        assert exc_info.value.code == error_codes.SUBSCRIPTION_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_policy_check())
+
+
+def test_plan_policy_rejects_site_creation_when_plan_is_missing() -> None:
+    async def run_policy_check() -> None:
+        plan_policy_service = PlanPolicyService(
+            plan_repository=FakePolicyPlanRepository(plan=None),
+            subscription_repository=FakePolicySubscriptionRepository(
+                subscription=SimpleNamespace(plan_id=uuid4())
+            ),
+            site_repository=FakePolicySiteRepository(used_sites=0),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await plan_policy_service.require_can_create_site(uuid4())
+
+        assert exc_info.value.code == error_codes.SUBSCRIPTION_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_policy_check())
+
+
+def test_plan_policy_rejects_site_creation_when_limit_is_reached() -> None:
+    async def run_policy_check() -> None:
+        plan_policy_service = PlanPolicyService(
+            plan_repository=FakePolicyPlanRepository(plan=SimpleNamespace(max_sites=1)),
+            subscription_repository=FakePolicySubscriptionRepository(
+                subscription=SimpleNamespace(plan_id=uuid4())
+            ),
+            site_repository=FakePolicySiteRepository(used_sites=1),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await plan_policy_service.require_can_create_site(uuid4())
+
+        assert exc_info.value.code == error_codes.SITE_LIMIT_EXCEEDED
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.details == {"max_sites": 1, "used_sites": 1}
+
+    asyncio.run(run_policy_check())
