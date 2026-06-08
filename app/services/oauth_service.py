@@ -19,6 +19,8 @@ from app.schemas.auth import (
 )
 from app.services.token_service import TokenService
 
+SUPPORTED_OAUTH_PROVIDERS = frozenset({"kakao", "naver"})
+
 
 class OAuthService:
     def __init__(
@@ -220,7 +222,7 @@ class OAuthService:
 
         provider = payload.get("provider")
         provider_user_id = payload.get("sub")
-        if provider not in {"kakao", "naver"} or not isinstance(provider_user_id, str):
+        if provider not in SUPPORTED_OAUTH_PROVIDERS or not isinstance(provider_user_id, str):
             raise AppException(
                 code=error_codes.INVALID_OAUTH_SIGNUP_TOKEN,
                 message="Invalid OAuth signup token.",

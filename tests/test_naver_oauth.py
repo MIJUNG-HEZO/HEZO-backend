@@ -364,3 +364,23 @@ def test_naver_client_parses_response_email_and_name() -> None:
         email="user@example.com",
         name="해조",
     )
+
+
+def test_naver_client_uses_nickname_when_name_is_absent() -> None:
+    user_info = NaverOAuthClient()._parse_user_info(
+        {
+            "resultcode": "00",
+            "message": "success",
+            "response": {
+                "id": "naver-user-id",
+                "email": "user@example.com",
+                "nickname": "닉네임",
+            },
+        }
+    )
+
+    assert user_info == NaverUserInfo(
+        provider_user_id="naver-user-id",
+        email="user@example.com",
+        name="닉네임",
+    )

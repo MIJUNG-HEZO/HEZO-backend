@@ -43,7 +43,7 @@ class NaverOAuthClient:
         }
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(self.token_url, params=params)
+            response = await client.post(self.token_url, data=params)
 
         if response.status_code >= 400:
             raise AppException(
