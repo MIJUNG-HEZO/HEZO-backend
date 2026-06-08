@@ -99,20 +99,17 @@ class FakePaymentRequestRepository:
         self.payment_request.status = kwargs["status"]
         return self.payment_request
 
-    async def update_pg_request_payload(
+    async def update_pg_request_id(
         self,
         payment_request: SimpleNamespace,
         *,
         pg_request_id: str,
-        pg_response_json: dict[str, object],
     ) -> SimpleNamespace:
         self.updated_kwargs = {
             "payment_request": payment_request,
             "pg_request_id": pg_request_id,
-            "pg_response_json": pg_response_json,
         }
         payment_request.pg_request_id = pg_request_id
-        payment_request.pg_response_json = pg_response_json
         return payment_request
 
 
@@ -301,14 +298,15 @@ def test_billing_service_rejects_free_plan_checkout() -> None:
     asyncio.run(run_create_checkout())
 
 
-def test_billing_service_rolls_back_when_payment_params_fail() -> None:
+def test_billing_service_rejects_missing_plan_name_before_creating_history() -> None:
     async def run_create_checkout() -> None:
         session = FakeSession()
+        payment_request_repository = FakePaymentRequestRepository()
         service = BillingService(
             session=session,
             user_repository=FakeUserRepository(make_user()),
             plan_repository=FakePlanRepository(make_plan(name="")),
-            payment_request_repository=FakePaymentRequestRepository(),
+            payment_request_repository=payment_request_repository,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -318,7 +316,8 @@ def test_billing_service_rolls_back_when_payment_params_fail() -> None:
             )
 
         assert session.committed is False
-        assert session.rolled_back is True
+        assert session.rolled_back is False
+        assert payment_request_repository.created_kwargs is None
         assert exc_info.value.code == error_codes.PAYMENT_REQUEST_FAILED
         assert exc_info.value.status_code == 502
 

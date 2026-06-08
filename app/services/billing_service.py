@@ -70,6 +70,12 @@ class BillingService:
                 status_code=400,
                 details={"plan_code": plan_code},
             )
+        if not plan.name:
+            raise AppException(
+                code=error_codes.PAYMENT_REQUEST_FAILED,
+                message="Failed to create payment request.",
+                status_code=502,
+            )
 
         try:
             payment_request = await self.payment_request_repository.create(
@@ -85,10 +91,9 @@ class BillingService:
                 plan=plan,
                 user=user,
             ).to_payload()
-            await self.payment_request_repository.update_pg_request_payload(
+            await self.payment_request_repository.update_pg_request_id(
                 payment_request,
                 pg_request_id=payment_params["orderId"],
-                pg_response_json=payment_params,
             )
             await self.billing_event_repository.create(
                 user_id=user.id,
@@ -106,13 +111,6 @@ class BillingService:
         except SQLAlchemyError:
             await self.session.rollback()
             raise
-        except ValueError as exc:
-            await self.session.rollback()
-            raise AppException(
-                code=error_codes.PAYMENT_REQUEST_FAILED,
-                message="Failed to create payment request.",
-                status_code=502,
-            ) from exc
 
         return BillingCheckoutResponse(
             payment_request_id=payment_request.id,
