@@ -25,3 +25,15 @@ class SubscriptionStatus(StrEnum):
     PAST_DUE = "past_due"
     CANCELED = "canceled"
     EXPIRED = "expired"
+
+
+class PaymentProvider(StrEnum):
+    TOSS_PAYMENTS = "toss_payments"
+
+
+class PaymentRequestStatus(StrEnum):
+    REQUESTED = "requested"
+    PENDING = "pending"
+    APPROVED = "approved"
+    FAILED = "failed"
+    CANCELED = "canceled"
