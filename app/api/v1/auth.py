@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Cookie, Depends, Response, status
 
 from app.api.deps import (
     CurrentUser,
@@ -53,6 +53,28 @@ async def login(
         path=get_refresh_token_cookie_path(),
     )
     return login_response
+
+
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh(
+    response: Response,
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    refresh_token: Annotated[str | None, Cookie(alias=settings.refresh_token_cookie_name)] = None,
+) -> LoginResponse:
+    if refresh_token is None:
+        auth_service.raise_invalid_refresh_token()
+
+    refresh_response, new_refresh_token = await auth_service.refresh(refresh_token)
+    response.set_cookie(
+        key=settings.refresh_token_cookie_name,
+        value=new_refresh_token,
+        httponly=True,
+        secure=settings.refresh_token_cookie_secure,
+        samesite="lax",
+        max_age=settings.refresh_token_expires_days * 24 * 60 * 60,
+        path=get_refresh_token_cookie_path(),
+    )
+    return refresh_response
 
 
 @router.post(
