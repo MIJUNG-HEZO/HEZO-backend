@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import CurrentUser, get_email_verification_service, require_authenticated
 from app.core import error_codes
 from app.core.exceptions import AppException
+from app.integrations.email.email_service import EmailMessage
 from app.main import app
 from app.services.email_verification_service import (
     EmailVerificationRequestResult,
@@ -19,11 +20,15 @@ from app.services.email_verification_service import (
 
 class FakeSession:
     def __init__(self) -> None:
-        self.committed = False
+        self.commit_count = 0
         self.rolled_back = False
 
+    @property
+    def committed(self) -> bool:
+        return self.commit_count > 0
+
     async def commit(self) -> None:
-        self.committed = True
+        self.commit_count += 1
 
     async def rollback(self) -> None:
         self.rolled_back = True
@@ -49,6 +54,7 @@ class FakeEmailVerificationTokenRepository:
         self.revoked_user_id: UUID | None = None
         self.revoked_at: datetime | None = None
         self.created_user_id: UUID | None = None
+        self.created_token: SimpleNamespace | None = None
         self.token_hash: str | None = None
         self.expires_at: datetime | None = None
 
@@ -66,7 +72,19 @@ class FakeEmailVerificationTokenRepository:
         self.created_user_id = user_id
         self.token_hash = token_hash
         self.expires_at = expires_at
-        return SimpleNamespace(id=uuid4())
+        self.created_token = SimpleNamespace(id=uuid4(), revoked_at=None)
+        return self.created_token
+
+
+class FakeEmailService:
+    def __init__(self, *, send_error: Exception | None = None) -> None:
+        self.send_error = send_error
+        self.sent_message: EmailMessage | None = None
+
+    async def send_email(self, message: EmailMessage) -> None:
+        self.sent_message = message
+        if self.send_error is not None:
+            raise self.send_error
 
 
 class FakeEmailVerificationService:
@@ -120,10 +138,12 @@ def test_email_verification_service_creates_hashed_token_and_revokes_existing_to
         user = make_user()
         user_repository = FakeUserRepository(user)
         token_repository = FakeEmailVerificationTokenRepository()
+        email_service = FakeEmailService()
         service = EmailVerificationService(
             session=session,
             user_repository=user_repository,
             email_verification_token_repository=token_repository,
+            email_service=email_service,
         )
 
         result = await service.request_verification_email(user_id=user.id)
@@ -140,7 +160,11 @@ def test_email_verification_service_creates_hashed_token_and_revokes_existing_to
         token = parse_qs(urlparse(result.verification_url).query)["token"][0]
         assert token_repository.token_hash == service.hash_token(token)
         assert token_repository.token_hash != token
+        assert email_service.sent_message is not None
+        assert email_service.sent_message.to_email == "user@example.com"
+        assert token in email_service.sent_message.text_body
         assert session.committed is True
+        assert session.commit_count == 1
         assert session.rolled_back is False
 
     asyncio.run(run_request())
@@ -154,6 +178,7 @@ def test_email_verification_service_rejects_already_verified_user() -> None:
             session=session,
             user_repository=FakeUserRepository(user),
             email_verification_token_repository=FakeEmailVerificationTokenRepository(),
+            email_service=FakeEmailService(),
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -173,6 +198,7 @@ def test_email_verification_service_rejects_missing_user() -> None:
             session=session,
             user_repository=FakeUserRepository(None),
             email_verification_token_repository=FakeEmailVerificationTokenRepository(),
+            email_service=FakeEmailService(),
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -181,5 +207,56 @@ def test_email_verification_service_rejects_missing_user() -> None:
         assert exc_info.value.code == error_codes.UNAUTHORIZED
         assert exc_info.value.status_code == 401
         assert session.committed is False
+
+    asyncio.run(run_request())
+
+
+def test_email_verification_service_rolls_back_token_when_email_delivery_fails() -> None:
+    async def run_request() -> None:
+        session = FakeSession()
+        user = make_user()
+        token_repository = FakeEmailVerificationTokenRepository()
+        service = EmailVerificationService(
+            session=session,
+            user_repository=FakeUserRepository(user),
+            email_verification_token_repository=token_repository,
+            email_service=FakeEmailService(send_error=RuntimeError("smtp failed")),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await service.request_verification_email(user_id=user.id)
+
+        assert exc_info.value.code == error_codes.EXTERNAL_SERVICE_ERROR
+        assert exc_info.value.status_code == 502
+        assert token_repository.created_token is not None
+        assert session.commit_count == 0
+        assert session.rolled_back is True
+
+    asyncio.run(run_request())
+
+
+def test_email_verification_service_preserves_local_url_when_smtp_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_request() -> None:
+        monkeypatch.setattr("app.services.email_verification_service.settings.app_env", "local")
+        monkeypatch.setattr("app.services.email_verification_service.settings.smtp_host", "")
+        monkeypatch.setattr("app.services.email_verification_service.settings.smtp_from_email", "")
+        session = FakeSession()
+        user = make_user()
+        email_service = FakeEmailService()
+        service = EmailVerificationService(
+            session=session,
+            user_repository=FakeUserRepository(user),
+            email_verification_token_repository=FakeEmailVerificationTokenRepository(),
+            email_service=None,
+        )
+
+        result = await service.request_verification_email(user_id=user.id)
+
+        assert result.verification_url is not None
+        assert "token=" in result.verification_url
+        assert email_service.sent_message is None
+        assert session.commit_count == 1
 
     asyncio.run(run_request())

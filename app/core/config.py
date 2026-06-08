@@ -38,6 +38,12 @@ class Settings(BaseSettings):
         default=30,
         alias="EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES",
     )
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_username: str = Field(default="", alias="SMTP_USERNAME")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    smtp_from_email: str = Field(default="", alias="SMTP_FROM_EMAIL")
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

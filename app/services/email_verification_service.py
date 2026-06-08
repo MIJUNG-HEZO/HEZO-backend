@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import error_codes
 from app.core.config import settings
 from app.core.exceptions import AppException
+from app.integrations.email.email_service import EmailMessage, EmailService
+from app.integrations.email.smtp_email_service import SmtpEmailService
 from app.repositories.email_verification_token_repository import EmailVerificationTokenRepository
 from app.repositories.user_repository import UserRepository
 
@@ -32,12 +34,15 @@ class EmailVerificationService:
         session: AsyncSession,
         user_repository: UserRepository | None = None,
         email_verification_token_repository: EmailVerificationTokenRepository | None = None,
+        email_service: EmailService | None = None,
     ) -> None:
         self.session = session
         self.user_repository = user_repository or UserRepository(session)
         self.email_verification_token_repository = (
             email_verification_token_repository or EmailVerificationTokenRepository(session)
         )
+        self.email_service = email_service or SmtpEmailService(settings)
+        self.email_service_configured = email_service is not None or self.is_smtp_configured()
 
     async def request_verification_email(self, *, user_id: UUID) -> EmailVerificationRequestResult:
         user = await self.user_repository.get_by_id_for_update(user_id)
@@ -58,6 +63,8 @@ class EmailVerificationService:
         token = token_urlsafe(48)
         token_hash = self.hash_token(token)
         expires_at = now + timedelta(minutes=settings.email_verification_token_expires_minutes)
+        verification_url = self.build_verification_url(token)
+        should_send_email = self.should_send_verification_email()
 
         try:
             await self.email_verification_token_repository.revoke_active_tokens(
@@ -69,14 +76,28 @@ class EmailVerificationService:
                 token_hash=token_hash,
                 expires_at=expires_at,
             )
+            if should_send_email:
+                await self.email_service.send_email(
+                    self.build_verification_email(
+                        to_email=user.email,
+                        verification_url=verification_url,
+                    )
+                )
             await self.session.commit()
         except SQLAlchemyError:
             await self.session.rollback()
             raise
+        except Exception as exc:
+            await self.session.rollback()
+            raise AppException(
+                code=error_codes.EXTERNAL_SERVICE_ERROR,
+                message="Email delivery failed.",
+                status_code=502,
+            ) from exc
 
         return EmailVerificationRequestResult(
             expires_at=expires_at,
-            verification_url=self.build_dev_verification_url(token),
+            verification_url=self.build_dev_verification_url(verification_url),
         )
 
     async def confirm_email_verification(
@@ -124,15 +145,53 @@ class EmailVerificationService:
 
         return EmailVerificationConfirmResult(email_verified_at=email_verified_at)
 
-    def build_dev_verification_url(self, token: str) -> str | None:
-        if settings.app_env not in {"local", "dev", "test"}:
-            return None
+    def build_verification_email(
+        self,
+        *,
+        to_email: str,
+        verification_url: str,
+    ) -> EmailMessage:
+        return EmailMessage(
+            to_email=to_email,
+            subject="[HEZO] 이메일 인증을 완료해주세요",
+            text_body=(
+                "HEZO 이메일 인증을 완료하려면 아래 링크를 열어주세요.\n\n"
+                f"{verification_url}\n\n"
+                "본인이 요청하지 않았다면 이 메일을 무시해주세요."
+            ),
+            html_body=(
+                "<p>HEZO 이메일 인증을 완료하려면 아래 링크를 열어주세요.</p>"
+                f'<p><a href="{verification_url}">이메일 인증하기</a></p>'
+                "<p>본인이 요청하지 않았다면 이 메일을 무시해주세요.</p>"
+            ),
+        )
+
+    def build_verification_url(self, token: str) -> str:
         base_url = settings.frontend_base_url.rstrip("/")
         query = urlencode({"token": token})
         return f"{base_url}/email-verification?{query}"
 
+    def build_dev_verification_url(self, verification_url: str) -> str | None:
+        if settings.app_env not in {"local", "dev", "test"}:
+            return None
+        return verification_url
+
     def hash_token(self, token: str) -> str:
         return sha256(token.encode("utf-8")).hexdigest()
+
+    def is_smtp_configured(self) -> bool:
+        return bool(settings.smtp_host and settings.smtp_from_email)
+
+    def should_send_verification_email(self) -> bool:
+        if self.email_service_configured:
+            return True
+        if settings.app_env in {"local", "dev", "test"}:
+            return False
+        raise AppException(
+            code=error_codes.EXTERNAL_SERVICE_ERROR,
+            message="Email delivery is not configured.",
+            status_code=502,
+        )
 
     def raise_invalid_verification_token(self) -> None:
         raise AppException(
