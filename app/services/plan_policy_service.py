@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from uuid import UUID
 
 from app.core import error_codes
@@ -6,6 +7,12 @@ from app.repositories.plan_repository import PlanRepository
 from app.repositories.site_repository import SiteRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.schemas.plan import PlanUsageDetail, PlanUsagePlan, PlanUsageResponse
+
+
+@dataclass(frozen=True)
+class PublishPolicyResult:
+    plan_code: str
+    plan_can_publish: bool
 
 
 class PlanPolicyService:
@@ -78,4 +85,26 @@ class PlanPolicyService:
                 can_create_site=used_sites < plan.max_sites,
                 can_publish=plan.can_publish,
             ),
+        )
+
+    async def get_publish_policy(self, user_id: UUID) -> PublishPolicyResult:
+        subscription = await self.subscription_repository.get_active_by_user_id(user_id)
+        if subscription is None:
+            raise AppException(
+                code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                message="Active subscription was not found.",
+                status_code=404,
+            )
+
+        plan = await self.plan_repository.get_by_id(subscription.plan_id)
+        if plan is None:
+            raise AppException(
+                code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                message="Active subscription plan was not found.",
+                status_code=404,
+            )
+
+        return PublishPolicyResult(
+            plan_code=plan.code,
+            plan_can_publish=plan.can_publish,
         )

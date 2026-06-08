@@ -9,7 +9,13 @@ from app.api.deps import (
     require_authenticated,
     require_email_verified,
 )
-from app.schemas.site import SiteCreateRequest, SiteListResponse, SiteResponse, SiteUpdateRequest
+from app.schemas.site import (
+    SiteCreateRequest,
+    SiteListResponse,
+    SitePublishAvailabilityResponse,
+    SiteResponse,
+    SiteUpdateRequest,
+)
 from app.services.site_service import SiteService
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
@@ -21,6 +27,18 @@ async def list_sites(
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteListResponse:
     return await site_service.list_sites(user_id=current_user.id)
+
+
+@router.get("/{site_id}/publish-availability", response_model=SitePublishAvailabilityResponse)
+async def check_publish_availability(
+    site_id: UUID,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    site_service: Annotated[SiteService, Depends(get_site_service)],
+) -> SitePublishAvailabilityResponse:
+    return await site_service.check_publish_availability(
+        user_id=current_user.id,
+        site_id=site_id,
+    )
 
 
 @router.get("/{site_id}", response_model=SiteResponse)

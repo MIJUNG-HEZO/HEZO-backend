@@ -41,3 +41,12 @@ class SiteResponse(BaseModel):
 class SiteListResponse(BaseModel):
     items: list[SiteResponse]
     total: int
+
+
+class SitePublishAvailabilityResponse(BaseModel):
+    can_publish: bool
+    reason: str | None
+    site_status: SiteStatus
+    is_published: bool
+    plan_code: str
+    plan_can_publish: bool
