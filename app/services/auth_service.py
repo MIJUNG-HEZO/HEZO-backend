@@ -3,7 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
 from app.core.exceptions import AppException
+from app.repositories.plan_repository import PlanRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse
 from app.services.password_service import PasswordService
@@ -15,12 +17,16 @@ class AuthService:
         self,
         session: AsyncSession,
         user_repository: UserRepository | None = None,
+        plan_repository: PlanRepository | None = None,
+        subscription_repository: SubscriptionRepository | None = None,
         refresh_token_repository: RefreshTokenRepository | None = None,
         password_service: PasswordService | None = None,
         token_service: TokenService | None = None,
     ) -> None:
         self.session = session
         self.user_repository = user_repository or UserRepository(session)
+        self.plan_repository = plan_repository or PlanRepository(session)
+        self.subscription_repository = subscription_repository or SubscriptionRepository(session)
         self.refresh_token_repository = refresh_token_repository or RefreshTokenRepository(session)
         self.password_service = password_service or PasswordService()
         self.token_service = token_service or TokenService()
@@ -44,8 +50,6 @@ class AuthService:
                 name=payload.name,
                 phone=payload.phone,
             )
-            await self.session.commit()
-            await self.session.refresh(user)
         except IntegrityError as exc:
             await self.session.rollback()
             raise AppException(
@@ -54,6 +58,23 @@ class AuthService:
                 status_code=409,
                 details={"email": payload.email},
             ) from exc
+
+        try:
+            free_plan = await self.plan_repository.get_free_plan()
+            if free_plan is None:
+                await self.session.rollback()
+                raise AppException(
+                    code=error_codes.PLAN_NOT_FOUND,
+                    message="Free plan is not configured.",
+                    status_code=500,
+                )
+
+            await self.subscription_repository.create_free_subscription(
+                user_id=user.id,
+                plan_id=free_plan.id,
+            )
+            await self.session.commit()
+            await self.session.refresh(user)
         except SQLAlchemyError:
             await self.session.rollback()
             raise

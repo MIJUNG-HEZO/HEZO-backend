@@ -92,6 +92,39 @@ class FakeUserRepository:
         return self.created_user
 
 
+DEFAULT_FREE_PLAN = object()
+
+
+class FakePlanRepository:
+    def __init__(self, free_plan: SimpleNamespace | None | object = DEFAULT_FREE_PLAN) -> None:
+        self.free_plan = (
+            SimpleNamespace(id=uuid4(), code="FREE")
+            if free_plan is DEFAULT_FREE_PLAN
+            else free_plan
+        )
+        self.free_plan_requested = False
+
+    async def get_free_plan(self) -> SimpleNamespace | None:
+        self.free_plan_requested = True
+        return self.free_plan
+
+
+class FakeSubscriptionRepository:
+    def __init__(self) -> None:
+        self.created_user_id: UUID | None = None
+        self.created_plan_id: UUID | None = None
+
+    async def create_free_subscription(
+        self,
+        *,
+        user_id: UUID,
+        plan_id: UUID,
+    ) -> SimpleNamespace:
+        self.created_user_id = user_id
+        self.created_plan_id = plan_id
+        return SimpleNamespace(id=uuid4(), user_id=user_id, plan_id=plan_id)
+
+
 class FakeRefreshTokenRepository:
     def __init__(self) -> None:
         self.user_id: UUID | None = None
@@ -225,10 +258,14 @@ def test_auth_service_creates_user_with_hashed_password() -> None:
     async def run_signup() -> None:
         session = FakeSession()
         user_repository = FakeUserRepository()
+        plan_repository = FakePlanRepository()
+        subscription_repository = FakeSubscriptionRepository()
         password_service = FakePasswordService()
         auth_service = AuthService(
             session=session,
             user_repository=user_repository,
+            plan_repository=plan_repository,
+            subscription_repository=subscription_repository,
             password_service=password_service,
         )
         payload = SignupRequest(
@@ -243,11 +280,46 @@ def test_auth_service_creates_user_with_hashed_password() -> None:
         assert user_repository.created_user is not None
         assert user_repository.created_user.password_hash == "argon2id-hash"
         assert user_repository.created_user.email_verified_at is None
+        assert plan_repository.free_plan_requested is True
+        assert subscription_repository.created_user_id == user_repository.created_user.id
+        assert subscription_repository.created_plan_id == plan_repository.free_plan.id
         assert password_service.raw_password == "safe-password"
         assert session.committed is True
         assert session.rolled_back is False
         assert session.refreshed_user_id == response.id
         assert response.email == "user@example.com"
+
+    asyncio.run(run_signup())
+
+
+def test_auth_service_rolls_back_when_free_plan_is_missing() -> None:
+    async def run_signup() -> None:
+        session = FakeSession()
+        user_repository = FakeUserRepository()
+        subscription_repository = FakeSubscriptionRepository()
+        auth_service = AuthService(
+            session=session,
+            user_repository=user_repository,
+            plan_repository=FakePlanRepository(free_plan=None),
+            subscription_repository=subscription_repository,
+            password_service=FakePasswordService(),
+        )
+        payload = SignupRequest(
+            email="user@example.com",
+            password="safe-password",
+            name="?댁“",
+            phone=None,
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.signup(payload)
+
+        assert exc_info.value.code == error_codes.PLAN_NOT_FOUND
+        assert exc_info.value.status_code == 500
+        assert user_repository.created_user is not None
+        assert subscription_repository.created_user_id is None
+        assert session.committed is False
+        assert session.rolled_back is True
 
     asyncio.run(run_signup())
 

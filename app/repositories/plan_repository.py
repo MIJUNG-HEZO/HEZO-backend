@@ -15,6 +15,14 @@ class PlanRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_code(self, code: str) -> Plan | None:
+        stmt = select(Plan).where(Plan.code == code)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_free_plan(self) -> Plan | None:
+        return await self.get_by_code("FREE")
+
     async def list_active(self) -> list[Plan]:
         stmt = (
             select(Plan)

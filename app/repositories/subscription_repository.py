@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,6 +11,30 @@ from app.models.subscription import Subscription
 class SubscriptionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def create(
+        self,
+        *,
+        user_id: UUID,
+        plan_id: UUID,
+        status: SubscriptionStatus = SubscriptionStatus.ACTIVE,
+        started_at: datetime | None = None,
+    ) -> Subscription:
+        subscription = Subscription(
+            user_id=user_id,
+            plan_id=plan_id,
+            status=status,
+            started_at=started_at or datetime.now(UTC),
+        )
+        self.session.add(subscription)
+        return subscription
+
+    async def create_free_subscription(self, *, user_id: UUID, plan_id: UUID) -> Subscription:
+        return await self.create(
+            user_id=user_id,
+            plan_id=plan_id,
+            status=SubscriptionStatus.ACTIVE,
+        )
 
     async def get_active_by_user_id(self, user_id: UUID) -> Subscription | None:
         stmt = select(Subscription).where(
