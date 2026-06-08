@@ -50,6 +50,16 @@ class Settings(BaseSettings):
         default=10,
         alias="OAUTH_SIGNUP_TOKEN_EXPIRE_MINUTES",
     )
+    toss_payments_client_key: str = Field(default="", alias="TOSS_PAYMENTS_CLIENT_KEY")
+    toss_payments_secret_key: str = Field(default="", alias="TOSS_PAYMENTS_SECRET_KEY")
+    toss_payments_success_url: str = Field(
+        default="http://localhost:3000/billing/success",
+        alias="TOSS_PAYMENTS_SUCCESS_URL",
+    )
+    toss_payments_fail_url: str = Field(
+        default="http://localhost:3000/billing/fail",
+        alias="TOSS_PAYMENTS_FAIL_URL",
+    )
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
