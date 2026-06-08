@@ -17,6 +17,7 @@ from app.schemas.auth import (
     KakaoOAuthLoginRequest,
     LoginRequest,
     LoginResponse,
+    NaverOAuthLoginRequest,
     OAuthCompleteSignupRequest,
     OAuthLoginResponse,
     SignupRequest,
@@ -67,6 +68,26 @@ async def kakao_oauth_login(
     oauth_service: Annotated[OAuthService, Depends(get_oauth_service)],
 ) -> OAuthLoginResponse:
     oauth_response, refresh_token = await oauth_service.login_with_kakao(payload)
+    if refresh_token is not None:
+        response.set_cookie(
+            key=settings.refresh_token_cookie_name,
+            value=refresh_token,
+            httponly=True,
+            secure=settings.refresh_token_cookie_secure,
+            samesite="lax",
+            max_age=settings.refresh_token_expires_days * 24 * 60 * 60,
+            path=get_refresh_token_cookie_path(),
+        )
+    return oauth_response
+
+
+@router.post("/oauth/naver", response_model=OAuthLoginResponse)
+async def naver_oauth_login(
+    payload: NaverOAuthLoginRequest,
+    response: Response,
+    oauth_service: Annotated[OAuthService, Depends(get_oauth_service)],
+) -> OAuthLoginResponse:
+    oauth_response, refresh_token = await oauth_service.login_with_naver(payload)
     if refresh_token is not None:
         response.set_cookie(
             key=settings.refresh_token_cookie_name,

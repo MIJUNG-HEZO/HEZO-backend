@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     smtp_from_email: str = Field(default="", alias="SMTP_FROM_EMAIL")
     kakao_client_id: str = Field(default="", alias="KAKAO_CLIENT_ID")
     kakao_client_secret: str = Field(default="", alias="KAKAO_CLIENT_SECRET")
+    naver_client_id: str = Field(default="", alias="NAVER_CLIENT_ID")
+    naver_client_secret: str = Field(default="", alias="NAVER_CLIENT_SECRET")
     oauth_signup_token_expires_minutes: int = Field(
         default=10,
         alias="OAUTH_SIGNUP_TOKEN_EXPIRE_MINUTES",

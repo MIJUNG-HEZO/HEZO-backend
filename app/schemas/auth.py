@@ -76,6 +76,10 @@ class KakaoOAuthLoginRequest(BaseModel):
         return value.strip()
 
 
+class NaverOAuthLoginRequest(KakaoOAuthLoginRequest):
+    pass
+
+
 class OAuthLoginResponse(BaseModel):
     signup_required: bool
     access_token: str | None = None
