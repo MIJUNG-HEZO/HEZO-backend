@@ -29,13 +29,16 @@ class FakeSession:
 
 
 class FakeUserRepository:
-    def __init__(self, user: SimpleNamespace | None) -> None:
+    def __init__(self, user: SimpleNamespace | None, calls: list[str] | None = None) -> None:
         self.user = user
+        self.calls = calls
         self.locked_user_id: UUID | None = None
         self.verified_user_id: UUID | None = None
         self.verified_at: datetime | None = None
 
     async def get_by_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
+        if self.calls is not None:
+            self.calls.append("lock_user")
         self.locked_user_id = user_id
         return self.user
 
@@ -52,16 +55,33 @@ class FakeUserRepository:
 
 
 class FakeEmailVerificationTokenRepository:
-    def __init__(self, token_row: SimpleNamespace | None) -> None:
+    def __init__(
+        self,
+        token_row: SimpleNamespace | None,
+        calls: list[str] | None = None,
+    ) -> None:
         self.token_row = token_row
+        self.calls = calls
+        self.snapshot_token_hash: str | None = None
         self.requested_token_hash: str | None = None
         self.used_token_id: UUID | None = None
         self.used_at: datetime | None = None
+
+    async def get_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> SimpleNamespace | None:
+        if self.calls is not None:
+            self.calls.append("get_token")
+        self.snapshot_token_hash = token_hash
+        return self.token_row
 
     async def get_by_token_hash_for_update(
         self,
         token_hash: str,
     ) -> SimpleNamespace | None:
+        if self.calls is not None:
+            self.calls.append("lock_token")
         self.requested_token_hash = token_hash
         return self.token_row
 
@@ -133,10 +153,11 @@ def test_confirm_email_verification_returns_verified_at() -> None:
 def test_email_verification_service_confirms_valid_token() -> None:
     async def run_confirm() -> None:
         session = FakeSession()
+        calls: list[str] = []
         user = make_user()
         token_row = make_token_row(user_id=user.id)
-        user_repository = FakeUserRepository(user)
-        token_repository = FakeEmailVerificationTokenRepository(token_row)
+        user_repository = FakeUserRepository(user, calls=calls)
+        token_repository = FakeEmailVerificationTokenRepository(token_row, calls=calls)
         service = EmailVerificationService(
             session=session,
             user_repository=user_repository,
@@ -145,6 +166,8 @@ def test_email_verification_service_confirms_valid_token() -> None:
 
         result = await service.confirm_email_verification(token="dev-token")
 
+        assert calls == ["get_token", "lock_user", "lock_token"]
+        assert token_repository.snapshot_token_hash == service.hash_token("dev-token")
         assert token_repository.requested_token_hash == service.hash_token("dev-token")
         assert user_repository.locked_user_id == user.id
         assert user_repository.verified_user_id == user.id

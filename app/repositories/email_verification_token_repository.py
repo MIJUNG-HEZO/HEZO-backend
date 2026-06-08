@@ -11,6 +11,16 @@ class EmailVerificationTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> EmailVerificationToken | None:
+        stmt = select(EmailVerificationToken).where(
+            EmailVerificationToken.token_hash == token_hash
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def revoke_active_tokens(self, *, user_id: UUID, revoked_at: datetime) -> None:
         stmt = (
             update(EmailVerificationToken)

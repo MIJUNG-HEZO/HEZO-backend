@@ -86,19 +86,26 @@ class EmailVerificationService:
     ) -> EmailVerificationConfirmResult:
         now = datetime.now(UTC)
         token_hash = self.hash_token(token)
+        token_snapshot = await self.email_verification_token_repository.get_by_token_hash(
+            token_hash
+        )
+        if token_snapshot is None:
+            self.raise_invalid_verification_token()
+
+        user = await self.user_repository.get_by_id_for_update(token_snapshot.user_id)
+        if user is None or user.deleted_at is not None:
+            self.raise_invalid_verification_token()
+
         email_verification_token = (
             await self.email_verification_token_repository.get_by_token_hash_for_update(token_hash)
         )
         if (
             email_verification_token is None
+            or email_verification_token.user_id != user.id
             or email_verification_token.used_at is not None
             or email_verification_token.revoked_at is not None
             or email_verification_token.expires_at <= now
         ):
-            self.raise_invalid_verification_token()
-
-        user = await self.user_repository.get_by_id_for_update(email_verification_token.user_id)
-        if user is None or user.deleted_at is not None:
             self.raise_invalid_verification_token()
 
         email_verified_at = user.email_verified_at or now
