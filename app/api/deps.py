@@ -15,6 +15,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.plan_service import PlanService
 from app.services.site_service import SiteService
+from app.services.subscription_service import SubscriptionService
 from app.services.token_service import TokenService
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -108,12 +109,19 @@ def get_plan_service(session: Annotated[AsyncSession, Depends(get_db_session)]) 
     return PlanService(session)
 
 
+def get_subscription_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> SubscriptionService:
+    return SubscriptionService(session)
+
+
 __all__ = [
     "CurrentUser",
     "get_auth_service",
     "get_db_session",
     "get_plan_service",
     "get_site_service",
+    "get_subscription_service",
     "require_authenticated",
     "require_email_verified",
 ]
