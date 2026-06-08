@@ -150,6 +150,22 @@ class AuthService:
 
         return LoginResponse(access_token=new_access_token), new_refresh_token
 
+    async def logout(self, refresh_token: str) -> None:
+        now = datetime.now(UTC)
+        refresh_token_hash = self.token_service.hash_refresh_token(refresh_token)
+        stored_refresh_token = await self.refresh_token_repository.get_by_token_hash_for_update(
+            refresh_token_hash
+        )
+        if stored_refresh_token is None or stored_refresh_token.revoked_at is not None:
+            return
+
+        try:
+            await self.refresh_token_repository.revoke(stored_refresh_token, revoked_at=now)
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
     def raise_invalid_refresh_token(self) -> None:
         raise AppException(
             code=error_codes.INVALID_REFRESH_TOKEN,
