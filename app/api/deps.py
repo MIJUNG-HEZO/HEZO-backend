@@ -17,6 +17,7 @@ from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
+from app.services.oauth_service import OAuthService
 from app.services.plan_policy_service import PlanPolicyService
 from app.services.plan_service import PlanService
 from app.services.site_service import SiteService
@@ -116,6 +117,10 @@ def get_email_verification_service(
     return EmailVerificationService(session)
 
 
+def get_oauth_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> OAuthService:
+    return OAuthService(session)
+
+
 def get_plan_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> PlanService:
     return PlanService(session)
 
@@ -142,6 +147,7 @@ __all__ = [
     "get_auth_service",
     "get_db_session",
     "get_email_verification_service",
+    "get_oauth_service",
     "get_plan_policy_service",
     "get_plan_service",
     "get_site_service",
