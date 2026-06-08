@@ -334,6 +334,7 @@ def test_logout_revokes_refresh_token_cookie() -> None:
     assert fake_auth_service.refresh_token == "refresh-token"
     assert "refresh_token=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
     assert "Path=/api/v1/auth" in response.headers["set-cookie"]
 
 
@@ -351,6 +352,8 @@ def test_logout_clears_cookie_without_refresh_token_cookie() -> None:
     assert fake_auth_service.refresh_token is None
     assert "refresh_token=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api/v1/auth" in response.headers["set-cookie"]
 
 
 def test_refresh_cookie_path_uses_configured_api_prefix(
