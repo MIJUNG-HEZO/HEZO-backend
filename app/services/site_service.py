@@ -12,6 +12,7 @@ from app.schemas.site import (
     VALID_SITE_MODULE_PAIRS,
     SiteCreateRequest,
     SiteListResponse,
+    SitePublishAvailabilityResponse,
     SiteResponse,
     SiteUpdateRequest,
 )
@@ -155,3 +156,32 @@ class SiteService:
         except SQLAlchemyError:
             await self.session.rollback()
             raise
+
+    async def check_publish_availability(
+        self,
+        *,
+        user_id: UUID,
+        site_id: UUID,
+    ) -> SitePublishAvailabilityResponse:
+        site = await self.site_repository.get_active_site_by_id_and_owner(
+            site_id=site_id,
+            owner_id=user_id,
+        )
+        if site is None:
+            raise AppException(
+                code=error_codes.SITE_NOT_FOUND,
+                message="Site was not found.",
+                status_code=404,
+            )
+
+        publish_policy = await self.plan_policy_service.get_publish_policy(user_id)
+        can_publish = publish_policy.plan_can_publish
+
+        return SitePublishAvailabilityResponse(
+            can_publish=can_publish,
+            reason=None if can_publish else "PLAN_CANNOT_PUBLISH",
+            site_status=site.status,
+            is_published=site.is_published,
+            plan_code=publish_policy.plan_code,
+            plan_can_publish=publish_policy.plan_can_publish,
+        )
