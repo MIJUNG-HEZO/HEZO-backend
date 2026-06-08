@@ -206,7 +206,7 @@ class FakeTokenService:
         return f"hashed-{refresh_token}"
 
     def get_refresh_token_expires_at(self) -> datetime:
-        return datetime(2026, 6, 21, tzinfo=UTC)
+        return datetime(2099, 1, 1, tzinfo=UTC)
 
 
 def test_signup_returns_created_user_without_sensitive_fields() -> None:
@@ -421,7 +421,7 @@ def test_auth_service_login_creates_tokens_and_stores_refresh_token_hash() -> No
         assert refresh_token == "refresh-token"
         assert refresh_token_repository.user_id == user_id
         assert refresh_token_repository.token_hash == "hashed-refresh-token"
-        assert refresh_token_repository.expires_at == datetime(2026, 6, 21, tzinfo=UTC)
+        assert refresh_token_repository.expires_at == datetime(2099, 1, 1, tzinfo=UTC)
         assert password_service.verified_password == "safe-password"
         assert password_service.verified_hash == "argon2id-hash"
         assert session.committed is True
@@ -435,7 +435,7 @@ def test_auth_service_refresh_rotates_refresh_token() -> None:
         refresh_token_row = SimpleNamespace(
             id=uuid4(),
             user_id=user_id,
-            expires_at=datetime(2026, 6, 21, tzinfo=UTC),
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
             revoked_at=None,
         )
         session = FakeSession()
@@ -464,7 +464,7 @@ def test_auth_service_refresh_rotates_refresh_token() -> None:
         assert refresh_token_repository.revoked_at is not None
         assert refresh_token_repository.user_id == user_id
         assert refresh_token_repository.token_hash == "hashed-refresh-token"
-        assert refresh_token_repository.expires_at == datetime(2026, 6, 21, tzinfo=UTC)
+        assert refresh_token_repository.expires_at == datetime(2099, 1, 1, tzinfo=UTC)
         assert user_repository.locked_user_id == user_id
         assert session.committed is True
         assert session.rolled_back is False
@@ -479,7 +479,7 @@ def test_auth_service_refresh_rotates_refresh_token() -> None:
         SimpleNamespace(
             id=uuid4(),
             user_id=uuid4(),
-            expires_at=datetime(2026, 6, 21, tzinfo=UTC),
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
             revoked_at=datetime(2026, 6, 8, tzinfo=UTC),
         ),
         SimpleNamespace(
@@ -526,7 +526,7 @@ def test_auth_service_refresh_rejects_missing_user() -> None:
                 stored_refresh_token=SimpleNamespace(
                     id=uuid4(),
                     user_id=uuid4(),
-                    expires_at=datetime(2026, 6, 21, tzinfo=UTC),
+                    expires_at=datetime(2099, 1, 1, tzinfo=UTC),
                     revoked_at=None,
                 ),
             ),
