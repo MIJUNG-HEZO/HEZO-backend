@@ -57,8 +57,6 @@ class FakeEmailVerificationTokenRepository:
         self.created_token: SimpleNamespace | None = None
         self.token_hash: str | None = None
         self.expires_at: datetime | None = None
-        self.revoked_token_id: UUID | None = None
-        self.failed_delivery_revoked_at: datetime | None = None
 
     async def revoke_active_tokens(self, *, user_id: UUID, revoked_at: datetime) -> None:
         self.revoked_user_id = user_id
@@ -76,17 +74,6 @@ class FakeEmailVerificationTokenRepository:
         self.expires_at = expires_at
         self.created_token = SimpleNamespace(id=uuid4(), revoked_at=None)
         return self.created_token
-
-    async def mark_revoked(
-        self,
-        email_verification_token: SimpleNamespace,
-        *,
-        revoked_at: datetime,
-    ) -> SimpleNamespace:
-        self.revoked_token_id = email_verification_token.id
-        self.failed_delivery_revoked_at = revoked_at
-        email_verification_token.revoked_at = revoked_at
-        return email_verification_token
 
 
 class FakeEmailService:
@@ -224,7 +211,7 @@ def test_email_verification_service_rejects_missing_user() -> None:
     asyncio.run(run_request())
 
 
-def test_email_verification_service_revokes_token_when_email_delivery_fails() -> None:
+def test_email_verification_service_rolls_back_token_when_email_delivery_fails() -> None:
     async def run_request() -> None:
         session = FakeSession()
         user = make_user()
@@ -242,9 +229,34 @@ def test_email_verification_service_revokes_token_when_email_delivery_fails() ->
         assert exc_info.value.code == error_codes.EXTERNAL_SERVICE_ERROR
         assert exc_info.value.status_code == 502
         assert token_repository.created_token is not None
-        assert token_repository.revoked_token_id == token_repository.created_token.id
-        assert token_repository.failed_delivery_revoked_at is not None
-        assert session.commit_count == 2
-        assert session.rolled_back is False
+        assert session.commit_count == 0
+        assert session.rolled_back is True
+
+    asyncio.run(run_request())
+
+
+def test_email_verification_service_preserves_local_url_when_smtp_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_request() -> None:
+        monkeypatch.setattr("app.services.email_verification_service.settings.app_env", "local")
+        monkeypatch.setattr("app.services.email_verification_service.settings.smtp_host", "")
+        monkeypatch.setattr("app.services.email_verification_service.settings.smtp_from_email", "")
+        session = FakeSession()
+        user = make_user()
+        email_service = FakeEmailService()
+        service = EmailVerificationService(
+            session=session,
+            user_repository=FakeUserRepository(user),
+            email_verification_token_repository=FakeEmailVerificationTokenRepository(),
+            email_service=None,
+        )
+
+        result = await service.request_verification_email(user_id=user.id)
+
+        assert result.verification_url is not None
+        assert "token=" in result.verification_url
+        assert email_service.sent_message is None
+        assert session.commit_count == 1
 
     asyncio.run(run_request())

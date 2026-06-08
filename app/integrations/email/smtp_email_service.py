@@ -1,5 +1,6 @@
 import asyncio
 import smtplib
+import ssl
 from email.message import EmailMessage as SmtpMessage
 
 from app.core.config import Settings
@@ -27,7 +28,7 @@ class SmtpEmailService:
 
         with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=10) as smtp:
             if self.settings.smtp_use_tls:
-                smtp.starttls()
+                smtp.starttls(context=ssl.create_default_context())
             if self.settings.smtp_username or self.settings.smtp_password:
                 smtp.login(self.settings.smtp_username, self.settings.smtp_password)
             smtp.send_message(smtp_message)

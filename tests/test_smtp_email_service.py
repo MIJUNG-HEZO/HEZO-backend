@@ -13,6 +13,7 @@ class FakeSmtp:
         self.port = port
         self.timeout = timeout
         self.started_tls = False
+        self.tls_context: Any = None
         self.login_username: str | None = None
         self.login_password: str | None = None
         self.sent_message: Any = None
@@ -24,8 +25,9 @@ class FakeSmtp:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def starttls(self) -> None:
+    def starttls(self, context: Any = None) -> None:
         self.started_tls = True
+        self.tls_context = context
 
     def login(self, username: str, password: str) -> None:
         self.login_username = username
@@ -67,6 +69,7 @@ def test_smtp_email_service_sends_email(monkeypatch: Any) -> None:
         assert smtp.port == 587
         assert smtp.timeout == 10
         assert smtp.started_tls is True
+        assert smtp.tls_context is not None
         assert smtp.login_username == "smtp-user"
         assert smtp.login_password == "smtp-password"
         assert smtp.sent_message is not None
