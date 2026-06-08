@@ -56,6 +56,16 @@ class EmailVerificationTokenRepository:
         await self.session.flush()
         return email_verification_token
 
+    async def mark_revoked(
+        self,
+        email_verification_token: EmailVerificationToken,
+        *,
+        revoked_at: datetime,
+    ) -> EmailVerificationToken:
+        email_verification_token.revoked_at = revoked_at
+        await self.session.flush()
+        return email_verification_token
+
     async def create(
         self,
         *,
