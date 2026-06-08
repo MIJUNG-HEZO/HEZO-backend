@@ -2,10 +2,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 
-from app.api.deps import get_auth_service
+from app.api.deps import (
+    CurrentUser,
+    get_auth_service,
+    get_email_verification_service,
+    require_authenticated,
+)
 from app.core.config import settings
-from app.schemas.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse
+from app.schemas.auth import (
+    EmailVerificationRequestResponse,
+    LoginRequest,
+    LoginResponse,
+    SignupRequest,
+    SignupResponse,
+)
 from app.services.auth_service import AuthService
+from app.services.email_verification_service import EmailVerificationService
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -39,3 +51,21 @@ async def login(
         path=get_refresh_token_cookie_path(),
     )
     return login_response
+
+
+@router.post(
+    "/email-verification/request",
+    response_model=EmailVerificationRequestResponse,
+)
+async def request_email_verification(
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    email_verification_service: Annotated[
+        EmailVerificationService,
+        Depends(get_email_verification_service),
+    ],
+) -> EmailVerificationRequestResponse:
+    result = await email_verification_service.request_verification_email(user_id=current_user.id)
+    return EmailVerificationRequestResponse(
+        expires_at=result.expires_at,
+        verification_url=result.verification_url,
+    )
