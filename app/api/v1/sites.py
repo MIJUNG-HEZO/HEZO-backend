@@ -46,6 +46,15 @@ async def update_site(
     )
 
 
+@router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_site(
+    site_id: UUID,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    site_service: Annotated[SiteService, Depends(get_site_service)],
+) -> None:
+    await site_service.delete_site(user_id=current_user.id, site_id=site_id)
+
+
 @router.post("", response_model=SiteResponse, status_code=status.HTTP_201_CREATED)
 async def create_site(
     payload: SiteCreateRequest,

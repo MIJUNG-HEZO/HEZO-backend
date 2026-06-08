@@ -115,6 +115,10 @@ class FakeSiteService:
             updated_at=datetime(2026, 6, 7, 3, tzinfo=UTC),
         )
 
+    async def delete_site(self, *, user_id: UUID, site_id: UUID) -> None:
+        self.listed_by_user_id = user_id
+        self.requested_site_id = site_id
+
 
 class FakeSubscription:
     def __init__(self, plan_id: UUID) -> None:
@@ -189,6 +193,11 @@ class FakeDetailSiteRepository:
         site.module_key = module_key
         return site
 
+    async def soft_delete(self, *, site: SimpleNamespace) -> SimpleNamespace:
+        site.status = SiteStatus.DELETED
+        site.deleted_at = datetime.now(UTC)
+        return site
+
 
 class FakeAsyncSession:
     async def commit(self) -> None:
@@ -246,6 +255,15 @@ def test_update_site_requires_authentication() -> None:
             "module_key": "medical",
         },
     )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
+
+
+def test_delete_site_requires_authentication() -> None:
+    client = TestClient(app)
+
+    response = client.delete(f"/api/v1/sites/{uuid4()}")
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
@@ -323,6 +341,26 @@ def test_update_site_returns_updated_site() -> None:
     assert body["name"] == "수정된 한의원"
     assert body["site_type"] == "landing"
     assert body["module_key"] == "medical"
+    assert fake_site_service.listed_by_user_id == current_user.id
+    assert fake_site_service.requested_site_id == site_id
+
+
+def test_delete_site_returns_no_content() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        client = TestClient(app)
+        response = client.delete(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert response.content == b""
     assert fake_site_service.listed_by_user_id == current_user.id
     assert fake_site_service.requested_site_id == site_id
 
@@ -552,6 +590,50 @@ def test_site_service_raises_site_not_found_when_updating_missing_site() -> None
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_update_site())
+
+
+def test_site_service_soft_deletes_site() -> None:
+    async def run_delete_site() -> None:
+        user_id = uuid4()
+        site_id = uuid4()
+        site = SimpleNamespace(
+            id=site_id,
+            name="강남 한의원",
+            site_type=SiteType.LANDING,
+            module_key=ModuleKey.MEDICAL,
+            status=SiteStatus.DRAFT,
+            is_published=False,
+            published_at=None,
+            deleted_at=None,
+            created_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 7, 2, tzinfo=UTC),
+        )
+        site_service = SiteService(session=None)
+        site_service.session = FakeAsyncSession()
+        site_service.site_repository = FakeDetailSiteRepository(site=site)
+
+        await site_service.delete_site(user_id=user_id, site_id=site_id)
+
+        assert site.status == SiteStatus.DELETED
+        assert site.deleted_at is not None
+        assert site_service.site_repository.site_id == site_id
+        assert site_service.site_repository.owner_id == user_id
+
+    asyncio.run(run_delete_site())
+
+
+def test_site_service_raises_site_not_found_when_deleting_missing_site() -> None:
+    async def run_delete_site() -> None:
+        site_service = SiteService(session=None)
+        site_service.site_repository = FakeDetailSiteRepository(site=None)
+
+        with pytest.raises(AppException) as exc_info:
+            await site_service.delete_site(user_id=uuid4(), site_id=uuid4())
+
+        assert exc_info.value.code == error_codes.SITE_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_delete_site())
 
 
 def test_plan_policy_blocks_site_creation_when_limit_is_exceeded() -> None:

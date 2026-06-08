@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -83,5 +84,11 @@ class SiteRepository:
         site.name = name
         site.site_type = site_type
         site.module_key = module_key
+        await self.session.flush()
+        return site
+
+    async def soft_delete(self, *, site: Site) -> Site:
+        site.status = SiteStatus.DELETED
+        site.deleted_at = datetime.now(UTC)
         await self.session.flush()
         return site
