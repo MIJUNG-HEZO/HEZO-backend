@@ -10,6 +10,8 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.schemas.auth import (
+    EmailVerificationConfirmRequest,
+    EmailVerificationConfirmResponse,
     EmailVerificationRequestResponse,
     LoginRequest,
     LoginResponse,
@@ -69,3 +71,18 @@ async def request_email_verification(
         expires_at=result.expires_at,
         verification_url=result.verification_url,
     )
+
+
+@router.post(
+    "/email-verification/confirm",
+    response_model=EmailVerificationConfirmResponse,
+)
+async def confirm_email_verification(
+    payload: EmailVerificationConfirmRequest,
+    email_verification_service: Annotated[
+        EmailVerificationService,
+        Depends(get_email_verification_service),
+    ],
+) -> EmailVerificationConfirmResponse:
+    result = await email_verification_service.confirm_email_verification(token=payload.token)
+    return EmailVerificationConfirmResponse(email_verified_at=result.email_verified_at)

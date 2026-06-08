@@ -64,3 +64,18 @@ class LoginResponse(BaseModel):
 class EmailVerificationRequestResponse(BaseModel):
     expires_at: datetime
     verification_url: str | None = None
+
+
+class EmailVerificationConfirmRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def strip_token(cls, token: Any) -> Any:
+        if not isinstance(token, str):
+            return token
+        return token.strip()
+
+
+class EmailVerificationConfirmResponse(BaseModel):
+    email_verified_at: datetime

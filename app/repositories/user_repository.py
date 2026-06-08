@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -24,6 +25,11 @@ class UserRepository:
         stmt = select(User).where(User.email == email)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def mark_email_verified(self, user: User, *, verified_at: datetime) -> User:
+        user.email_verified_at = verified_at
+        await self.session.flush()
+        return user
 
     async def create(
         self,
