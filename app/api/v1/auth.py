@@ -6,6 +6,7 @@ from app.api.deps import (
     CurrentUser,
     get_auth_service,
     get_email_verification_service,
+    get_oauth_service,
     require_authenticated,
 )
 from app.core.config import settings
@@ -13,13 +14,17 @@ from app.schemas.auth import (
     EmailVerificationConfirmRequest,
     EmailVerificationConfirmResponse,
     EmailVerificationRequestResponse,
+    KakaoOAuthLoginRequest,
     LoginRequest,
     LoginResponse,
+    OAuthCompleteSignupRequest,
+    OAuthLoginResponse,
     SignupRequest,
     SignupResponse,
 )
 from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
+from app.services.oauth_service import OAuthService
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -53,6 +58,26 @@ async def login(
         path=get_refresh_token_cookie_path(),
     )
     return login_response
+
+
+@router.post("/oauth/kakao", response_model=OAuthLoginResponse)
+async def kakao_oauth_login(
+    payload: KakaoOAuthLoginRequest,
+    response: Response,
+    oauth_service: Annotated[OAuthService, Depends(get_oauth_service)],
+) -> OAuthLoginResponse:
+    oauth_response, refresh_token = await oauth_service.login_with_kakao(payload)
+    if refresh_token is not None:
+        response.set_cookie(
+            key=settings.refresh_token_cookie_name,
+            value=refresh_token,
+            httponly=True,
+            secure=settings.refresh_token_cookie_secure,
+            samesite="lax",
+            max_age=settings.refresh_token_expires_days * 24 * 60 * 60,
+            path=get_refresh_token_cookie_path(),
+        )
+    return oauth_response
 
 
 @router.post("/refresh", response_model=LoginResponse)
@@ -93,6 +118,25 @@ async def logout(
         httponly=True,
         samesite="lax",
     )
+
+
+@router.post("/oauth/complete-signup", response_model=OAuthLoginResponse)
+async def complete_oauth_signup(
+    payload: OAuthCompleteSignupRequest,
+    response: Response,
+    oauth_service: Annotated[OAuthService, Depends(get_oauth_service)],
+) -> OAuthLoginResponse:
+    oauth_response, refresh_token = await oauth_service.complete_signup(payload)
+    response.set_cookie(
+        key=settings.refresh_token_cookie_name,
+        value=refresh_token,
+        httponly=True,
+        secure=settings.refresh_token_cookie_secure,
+        samesite="lax",
+        max_age=settings.refresh_token_expires_days * 24 * 60 * 60,
+        path=get_refresh_token_cookie_path(),
+    )
+    return oauth_response
 
 
 @router.post(

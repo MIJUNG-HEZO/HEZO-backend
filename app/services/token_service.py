@@ -30,6 +30,33 @@ class TokenService:
     def create_refresh_token(self) -> str:
         return token_urlsafe(64)
 
+    def create_oauth_signup_token(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        email: str | None,
+        name: str | None,
+    ) -> str:
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(minutes=settings.oauth_signup_token_expires_minutes)
+        payload = {
+            "sub": provider_user_id,
+            "iat": int(now.timestamp()),
+            "exp": int(expires_at.timestamp()),
+            "type": "oauth_signup",
+            "provider": provider,
+            "email": email,
+            "name": name,
+        }
+        return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+    def decode_oauth_signup_token(self, token: str) -> dict:
+        payload = self.decode_token(token)
+        if payload.get("type") != "oauth_signup":
+            raise jwt.InvalidTokenError("Invalid oauth signup token type.")
+        return payload
+
     def hash_refresh_token(self, refresh_token: str) -> str:
         import hashlib
 
