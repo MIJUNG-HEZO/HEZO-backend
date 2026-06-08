@@ -1,3 +1,4 @@
+from app.models.billing_event import BillingEvent
 from app.models.email_verification_token import EmailVerificationToken
 from app.models.payment_request import PaymentRequest
 from app.models.plan import Plan
@@ -8,6 +9,7 @@ from app.models.user import User
 
 __all__ = [
     "EmailVerificationToken",
+    "BillingEvent",
     "PaymentRequest",
     "Plan",
     "RefreshToken",
