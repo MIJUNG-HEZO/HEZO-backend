@@ -77,6 +77,24 @@ async def refresh(
     return refresh_response
 
 
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    response: Response,
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    refresh_token: Annotated[str | None, Cookie(alias=settings.refresh_token_cookie_name)] = None,
+) -> None:
+    if refresh_token is not None:
+        await auth_service.logout(refresh_token)
+
+    response.delete_cookie(
+        key=settings.refresh_token_cookie_name,
+        path=get_refresh_token_cookie_path(),
+        secure=settings.refresh_token_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 @router.post(
     "/email-verification/request",
     response_model=EmailVerificationRequestResponse,

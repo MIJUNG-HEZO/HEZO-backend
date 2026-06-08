@@ -22,6 +22,7 @@ class FakeAuthService:
     def __init__(self) -> None:
         self.payload: SignupRequest | None = None
         self.login_payload: LoginRequest | None = None
+        self.refresh_token: str | None = None
 
     async def signup(self, payload: SignupRequest) -> SignupResponse:
         self.payload = payload
@@ -41,6 +42,9 @@ class FakeAuthService:
 
     async def refresh(self, refresh_token: str) -> tuple[LoginResponse, str]:
         return LoginResponse(access_token=f"access-token-for-{refresh_token}"), "new-refresh-token"
+
+    async def logout(self, refresh_token: str) -> None:
+        self.refresh_token = refresh_token
 
     def raise_invalid_refresh_token(self) -> None:
         raise AppException(
@@ -315,6 +319,40 @@ def test_refresh_rejects_missing_refresh_token_cookie() -> None:
     assert response.json()["error"]["code"] == error_codes.INVALID_REFRESH_TOKEN
 
 
+def test_logout_revokes_refresh_token_cookie() -> None:
+    fake_auth_service = FakeAuthService()
+    app.dependency_overrides[get_auth_service] = lambda: fake_auth_service
+
+    try:
+        client = TestClient(app)
+        client.cookies.set("refresh_token", "refresh-token")
+        response = client.post("/api/v1/auth/logout")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert fake_auth_service.refresh_token == "refresh-token"
+    assert "refresh_token=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "Path=/api/v1/auth" in response.headers["set-cookie"]
+
+
+def test_logout_clears_cookie_without_refresh_token_cookie() -> None:
+    fake_auth_service = FakeAuthService()
+    app.dependency_overrides[get_auth_service] = lambda: fake_auth_service
+
+    try:
+        client = TestClient(app)
+        response = client.post("/api/v1/auth/logout")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert fake_auth_service.refresh_token is None
+    assert "refresh_token=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
 def test_refresh_cookie_path_uses_configured_api_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -541,6 +579,72 @@ def test_auth_service_refresh_rejects_missing_user() -> None:
         assert session.committed is False
 
     asyncio.run(run_refresh())
+
+
+def test_auth_service_logout_revokes_refresh_token() -> None:
+    async def run_logout() -> None:
+        refresh_token_row = SimpleNamespace(
+            id=uuid4(),
+            user_id=uuid4(),
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            revoked_at=None,
+        )
+        session = FakeSession()
+        refresh_token_repository = FakeRefreshTokenRepository(
+            stored_refresh_token=refresh_token_row,
+        )
+        auth_service = AuthService(
+            session=session,
+            refresh_token_repository=refresh_token_repository,
+            token_service=FakeTokenService(),
+        )
+
+        await auth_service.logout("refresh-token")
+
+        assert refresh_token_repository.requested_token_hash == "hashed-refresh-token"
+        assert refresh_token_repository.revoked_token_id == refresh_token_row.id
+        assert refresh_token_repository.revoked_at is not None
+        assert refresh_token_row.revoked_at is not None
+        assert session.committed is True
+        assert session.rolled_back is False
+
+    asyncio.run(run_logout())
+
+
+@pytest.mark.parametrize(
+    "stored_refresh_token",
+    [
+        None,
+        SimpleNamespace(
+            id=uuid4(),
+            user_id=uuid4(),
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            revoked_at=datetime(2026, 6, 8, tzinfo=UTC),
+        ),
+    ],
+)
+def test_auth_service_logout_ignores_missing_or_revoked_refresh_token(
+    stored_refresh_token: SimpleNamespace | None,
+) -> None:
+    async def run_logout() -> None:
+        session = FakeSession()
+        refresh_token_repository = FakeRefreshTokenRepository(
+            stored_refresh_token=stored_refresh_token,
+        )
+        auth_service = AuthService(
+            session=session,
+            refresh_token_repository=refresh_token_repository,
+            token_service=FakeTokenService(),
+        )
+
+        await auth_service.logout("refresh-token")
+
+        assert refresh_token_repository.requested_token_hash == "hashed-refresh-token"
+        assert refresh_token_repository.revoked_token_id is None
+        assert session.committed is False
+        assert session.rolled_back is False
+
+    asyncio.run(run_logout())
 
 
 def test_auth_service_login_rejects_invalid_credentials() -> None:
