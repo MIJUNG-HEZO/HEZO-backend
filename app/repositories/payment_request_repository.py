@@ -1,7 +1,6 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import PaymentProvider, PaymentRequestStatus
@@ -45,19 +44,5 @@ class PaymentRequestRepository:
         pg_request_id: str,
     ) -> PaymentRequest:
         payment_request.pg_request_id = pg_request_id
-        await self.session.flush()
-        return payment_request
-
-    async def get_by_id_for_update(self, payment_request_id: UUID) -> PaymentRequest | None:
-        stmt = (
-            select(PaymentRequest)
-            .where(PaymentRequest.id == payment_request_id)
-            .with_for_update()
-        )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
-
-    async def mark_approved(self, payment_request: PaymentRequest) -> PaymentRequest:
-        payment_request.status = PaymentRequestStatus.APPROVED
         await self.session.flush()
         return payment_request
