@@ -35,6 +35,9 @@ class UserService:
                 status_code=404,
             )
 
+        if not payload.model_fields_set:
+            return self._to_response(user)
+
         try:
             updated_user = await self.user_repository.update_profile(
                 user=user,

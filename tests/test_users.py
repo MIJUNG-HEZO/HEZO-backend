@@ -315,6 +315,28 @@ def test_user_service_update_me_updates_name_and_phone() -> None:
     asyncio.run(run_service())
 
 
+def test_user_service_update_me_returns_without_write_when_payload_is_empty() -> None:
+    async def run_service() -> None:
+        session = FakeAsyncSession()
+        user = make_user()
+        repository = FakeUserRepository(user)
+        service = UserService(session)  # type: ignore[arg-type]
+        service.user_repository = repository  # type: ignore[assignment]
+
+        response = await service.update_me(
+            user_id=user.id,
+            payload=UserUpdateRequest(),
+        )
+
+        assert repository.updated_kwargs is None
+        assert response.name == user.name
+        assert response.phone == user.phone
+        assert session.committed is False
+        assert session.refreshed is False
+
+    asyncio.run(run_service())
+
+
 def test_user_service_update_me_preserves_omitted_name() -> None:
     async def run_service() -> None:
         session = FakeAsyncSession()
