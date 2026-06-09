@@ -99,14 +99,14 @@ class FakePlanRepository:
         plans_by_code: dict[str, SimpleNamespace] | None = None,
     ) -> None:
         self.plan = plan
-        self.plans_by_id = plans_by_id or {}
+        self.plans_by_id = plans_by_id
         self.plans_by_code = plans_by_code or {}
         self.plan_id: UUID | None = None
         self.code: str | None = None
 
     async def get_by_id(self, plan_id: UUID) -> SimpleNamespace | None:
         self.plan_id = plan_id
-        if self.plans_by_id:
+        if self.plans_by_id is not None:
             return self.plans_by_id.get(plan_id)
         return self.plan
 
