@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+(?:[ A-Za-z가-힣]*[A-Za-z가-힣])?$")
+NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+( [A-Za-z가-힣]+)*$")
 PHONE_PATTERN = re.compile(r"^[0-9+\-\s()]{7,30}$")
 
 
@@ -21,7 +21,7 @@ class UserResponse(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
 
     @field_validator("name", mode="before")
@@ -33,7 +33,9 @@ class UserUpdateRequest(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, name: str) -> str:
+    def validate_name(cls, name: str | None) -> str | None:
+        if name is None:
+            return None
         if not NAME_PATTERN.fullmatch(name):
             raise ValueError("Name can contain only Korean or English letters.")
         return name

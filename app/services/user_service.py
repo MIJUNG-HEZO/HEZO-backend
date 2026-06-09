@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
 from app.core.exceptions import AppException
+from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserModelResponse, UserResponse, UserUpdateRequest
 
@@ -37,8 +38,8 @@ class UserService:
         try:
             updated_user = await self.user_repository.update_profile(
                 user=user,
-                name=payload.name,
-                phone=payload.phone,
+                name=payload.name or user.name,
+                phone=payload.phone if payload.phone is not None else user.phone,
             )
             await self.session.commit()
             await self.session.refresh(updated_user)
@@ -48,7 +49,7 @@ class UserService:
 
         return self._to_response(updated_user)
 
-    def _to_response(self, user: object) -> UserResponse:
+    def _to_response(self, user: User) -> UserResponse:
         model = UserModelResponse.model_validate(user)
         return UserResponse(
             id=model.id,

@@ -39,7 +39,7 @@ class FakeUserService:
         return UserResponse(
             id=user_id,
             email="user@example.com",
-            name=payload.name,
+            name=payload.name or "홍길동",
             phone=payload.phone,
             email_verified_at=datetime(2026, 6, 9, tzinfo=UTC),
             email_verified=True,
@@ -199,6 +199,46 @@ def test_update_me_rejects_invalid_phone() -> None:
     assert response.status_code == 422
 
 
+def test_update_me_allows_phone_only_patch() -> None:
+    client = TestClient(app)
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime(2026, 6, 9, tzinfo=UTC))
+    fake_user_service = FakeUserService()
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_user_service] = lambda: fake_user_service
+
+    try:
+        response = client.patch(
+            "/api/v1/users/me",
+            json={
+                "phone": "010-1111-2222",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "홍길동"
+    assert fake_user_service.update_payload == UserUpdateRequest(phone="010-1111-2222")
+
+
+def test_update_me_rejects_consecutive_spaces_in_name() -> None:
+    client = TestClient(app)
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime(2026, 6, 9, tzinfo=UTC))
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+
+    try:
+        response = client.patch(
+            "/api/v1/users/me",
+            json={
+                "name": "Kim  Hezo",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
 def test_user_service_get_me_returns_email_verified_flag() -> None:
     async def run_service() -> None:
         session = FakeAsyncSession()
@@ -252,6 +292,31 @@ def test_user_service_update_me_updates_name_and_phone() -> None:
         assert response.phone == "010-1111-2222"
         assert session.committed is True
         assert session.refreshed is True
+
+    asyncio.run(run_service())
+
+
+def test_user_service_update_me_preserves_omitted_name() -> None:
+    async def run_service() -> None:
+        session = FakeAsyncSession()
+        user = make_user()
+        user.phone = "010-0000-0000"
+        repository = FakeUserRepository(user)
+        service = UserService(session)  # type: ignore[arg-type]
+        service.user_repository = repository  # type: ignore[assignment]
+
+        response = await service.update_me(
+            user_id=user.id,
+            payload=UserUpdateRequest(phone="010-1111-2222"),
+        )
+
+        assert repository.updated_kwargs == {
+            "user": user,
+            "name": "홍길동",
+            "phone": "010-1111-2222",
+        }
+        assert response.name == "홍길동"
+        assert response.phone == "010-1111-2222"
 
     asyncio.run(run_service())
 
