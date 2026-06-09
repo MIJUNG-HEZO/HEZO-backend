@@ -199,6 +199,25 @@ def test_update_me_rejects_invalid_phone() -> None:
     assert response.status_code == 422
 
 
+def test_update_me_rejects_phone_with_tab_or_newline() -> None:
+    client = TestClient(app)
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime(2026, 6, 9, tzinfo=UTC))
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+
+    try:
+        response = client.patch(
+            "/api/v1/users/me",
+            json={
+                "name": "홍길동",
+                "phone": "010\t1234\n5678",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
 def test_update_me_allows_phone_only_patch() -> None:
     client = TestClient(app)
     current_user = CurrentUser(id=uuid4(), email_verified_at=datetime(2026, 6, 9, tzinfo=UTC))

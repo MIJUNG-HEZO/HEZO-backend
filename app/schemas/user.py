@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+( [A-Za-z가-힣]+)*$")
-PHONE_PATTERN = re.compile(r"^[0-9+\-\s()]{7,30}$")
+PHONE_PATTERN = re.compile(r"^[0-9+\- ()]{7,30}$")
 
 
 class UserResponse(BaseModel):
