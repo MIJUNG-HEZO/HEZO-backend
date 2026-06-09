@@ -8,7 +8,7 @@ from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import get_auth_service
+from app.api.deps import CurrentUser, get_auth_service, require_authenticated
 from app.api.v1 import auth as auth_router
 from app.core import error_codes
 from app.core.exceptions import AppException
@@ -23,6 +23,7 @@ class FakeAuthService:
         self.payload: SignupRequest | None = None
         self.login_payload: LoginRequest | None = None
         self.refresh_token: str | None = None
+        self.deleted_user_id: UUID | None = None
 
     async def signup(self, payload: SignupRequest) -> SignupResponse:
         self.payload = payload
@@ -45,6 +46,9 @@ class FakeAuthService:
 
     async def logout(self, refresh_token: str) -> None:
         self.refresh_token = refresh_token
+
+    async def delete_account(self, user_id: UUID) -> None:
+        self.deleted_user_id = user_id
 
     def raise_invalid_refresh_token(self) -> None:
         raise AppException(
@@ -80,13 +84,32 @@ class FakeUserRepository:
         self.create_error = create_error
         self.created_user: SimpleNamespace | None = None
         self.locked_user_id: UUID | None = None
+        self.soft_deleted_user_id: UUID | None = None
+        self.deleted_at: datetime | None = None
 
     async def get_by_email(self, email: str) -> SimpleNamespace | None:
+        return self.existing_user
+
+    async def get_by_id(self, user_id: UUID) -> SimpleNamespace | None:
         return self.existing_user
 
     async def get_by_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
         self.locked_user_id = user_id
         return self.existing_user
+
+    async def soft_delete(
+        self,
+        user: SimpleNamespace,
+        *,
+        deleted_at: datetime,
+    ) -> SimpleNamespace:
+        self.soft_deleted_user_id = user.id
+        self.deleted_at = deleted_at
+        user.email = f"deleted:{user.id}:{user.email}"
+        user.password_hash = None
+        user.phone = None
+        user.deleted_at = deleted_at
+        return user
 
     async def create(
         self,
@@ -153,6 +176,7 @@ class FakeRefreshTokenRepository:
         self.requested_token_hash: str | None = None
         self.revoked_token_id: UUID | None = None
         self.revoked_at: datetime | None = None
+        self.revoked_user_id: UUID | None = None
 
     async def get_by_token_hash_for_update(self, token_hash: str) -> SimpleNamespace | None:
         self.requested_token_hash = token_hash
@@ -169,6 +193,10 @@ class FakeRefreshTokenRepository:
         refresh_token.revoked_at = revoked_at
         return refresh_token
 
+    async def revoke_all_by_user_id(self, user_id: UUID, *, revoked_at: datetime) -> None:
+        self.revoked_user_id = user_id
+        self.revoked_at = revoked_at
+
     async def create(
         self,
         *,
@@ -180,6 +208,14 @@ class FakeRefreshTokenRepository:
         self.token_hash = token_hash
         self.expires_at = expires_at
         return SimpleNamespace(id=uuid4())
+
+
+class FakeSocialAccountRepository:
+    def __init__(self) -> None:
+        self.anonymized_user_id: UUID | None = None
+
+    async def anonymize_by_user_id(self, user_id: UUID) -> None:
+        self.anonymized_user_id = user_id
 
 
 class FakePasswordService:
@@ -356,6 +392,38 @@ def test_logout_clears_cookie_without_refresh_token_cookie() -> None:
     assert "Path=/api/v1/auth" in response.headers["set-cookie"]
 
 
+def test_delete_my_account_soft_deletes_current_user_and_clears_cookie() -> None:
+    user_id = uuid4()
+    fake_auth_service = FakeAuthService()
+    app.dependency_overrides[get_auth_service] = lambda: fake_auth_service
+    app.dependency_overrides[require_authenticated] = lambda: CurrentUser(
+        id=user_id,
+        email_verified_at=None,
+    )
+
+    try:
+        client = TestClient(app)
+        response = client.delete("/api/v1/auth/me")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert fake_auth_service.deleted_user_id == user_id
+    assert "refresh_token=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api/v1/auth" in response.headers["set-cookie"]
+
+
+def test_delete_my_account_rejects_missing_access_token() -> None:
+    client = TestClient(app)
+
+    response = client.delete("/api/v1/auth/me")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
+
+
 def test_refresh_cookie_path_uses_configured_api_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -443,6 +511,7 @@ def test_auth_service_login_creates_tokens_and_stores_refresh_token_hash() -> No
                 id=user_id,
                 email="user@example.com",
                 password_hash="argon2id-hash",
+                deleted_at=None,
             )
         )
         refresh_token_repository = FakeRefreshTokenRepository()
@@ -466,6 +535,38 @@ def test_auth_service_login_creates_tokens_and_stores_refresh_token_hash() -> No
         assert password_service.verified_password == "safe-password"
         assert password_service.verified_hash == "argon2id-hash"
         assert session.committed is True
+
+    asyncio.run(run_login())
+
+
+def test_auth_service_login_rejects_deleted_user() -> None:
+    async def run_login() -> None:
+        session = FakeSession()
+        password_service = FakePasswordService()
+        auth_service = AuthService(
+            session=session,
+            user_repository=FakeUserRepository(
+                existing_user=SimpleNamespace(
+                    id=uuid4(),
+                    email="user@example.com",
+                    password_hash="argon2id-hash",
+                    deleted_at=datetime(2026, 6, 9, tzinfo=UTC),
+                )
+            ),
+            refresh_token_repository=FakeRefreshTokenRepository(),
+            password_service=password_service,
+            token_service=FakeTokenService(),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.login(
+                LoginRequest(email="user@example.com", password="safe-password")
+            )
+
+        assert exc_info.value.code == error_codes.INVALID_CREDENTIALS
+        assert exc_info.value.status_code == 401
+        assert password_service.verified_password is None
+        assert session.committed is False
 
     asyncio.run(run_login())
 
@@ -650,6 +751,80 @@ def test_auth_service_logout_ignores_missing_or_revoked_refresh_token(
     asyncio.run(run_logout())
 
 
+def test_auth_service_delete_account_soft_deletes_user_and_revokes_refresh_tokens() -> None:
+    async def run_delete_account() -> None:
+        user_id = uuid4()
+        user = SimpleNamespace(
+            id=user_id,
+            email="user@example.com",
+            password_hash="argon2id-hash",
+            phone="010-1234-5678",
+            deleted_at=None,
+        )
+        session = FakeSession()
+        user_repository = FakeUserRepository(existing_user=user)
+        refresh_token_repository = FakeRefreshTokenRepository()
+        social_account_repository = FakeSocialAccountRepository()
+        auth_service = AuthService(
+            session=session,
+            user_repository=user_repository,
+            refresh_token_repository=refresh_token_repository,
+            social_account_repository=social_account_repository,
+        )
+
+        await auth_service.delete_account(user_id)
+
+        assert user_repository.locked_user_id == user_id
+        assert user_repository.soft_deleted_user_id == user_id
+        assert user_repository.deleted_at is not None
+        assert user.deleted_at == user_repository.deleted_at
+        assert user.email == f"deleted:{user_id}:user@example.com"
+        assert user.password_hash is None
+        assert user.phone is None
+        assert refresh_token_repository.revoked_user_id == user_id
+        assert refresh_token_repository.revoked_at == user_repository.deleted_at
+        assert social_account_repository.anonymized_user_id == user_id
+        assert session.committed is True
+        assert session.rolled_back is False
+
+    asyncio.run(run_delete_account())
+
+
+@pytest.mark.parametrize(
+    "existing_user",
+    [
+        None,
+        SimpleNamespace(id=uuid4(), deleted_at=datetime(2026, 6, 9, tzinfo=UTC)),
+    ],
+)
+def test_auth_service_delete_account_rejects_missing_or_deleted_user(
+    existing_user: SimpleNamespace | None,
+) -> None:
+    async def run_delete_account() -> None:
+        session = FakeSession()
+        user_repository = FakeUserRepository(existing_user=existing_user)
+        refresh_token_repository = FakeRefreshTokenRepository()
+        social_account_repository = FakeSocialAccountRepository()
+        auth_service = AuthService(
+            session=session,
+            user_repository=user_repository,
+            refresh_token_repository=refresh_token_repository,
+            social_account_repository=social_account_repository,
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.delete_account(uuid4())
+
+        assert exc_info.value.code == error_codes.UNAUTHORIZED
+        assert exc_info.value.status_code == 401
+        assert user_repository.soft_deleted_user_id is None
+        assert refresh_token_repository.revoked_user_id is None
+        assert social_account_repository.anonymized_user_id is None
+        assert session.committed is False
+
+    asyncio.run(run_delete_account())
+
+
 def test_auth_service_login_rejects_invalid_credentials() -> None:
     async def run_login() -> None:
         session = FakeSession()
@@ -662,6 +837,7 @@ def test_auth_service_login_rejects_invalid_credentials() -> None:
                     id=uuid4(),
                     email="user@example.com",
                     password_hash="argon2id-hash",
+                    deleted_at=None,
                 )
             ),
             refresh_token_repository=FakeRefreshTokenRepository(),

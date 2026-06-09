@@ -141,6 +141,22 @@ async def logout(
     )
 
 
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_my_account(
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    response: Response,
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> None:
+    await auth_service.delete_account(current_user.id)
+    response.delete_cookie(
+        key=settings.refresh_token_cookie_name,
+        path=get_refresh_token_cookie_path(),
+        secure=settings.refresh_token_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 @router.post("/oauth/complete-signup", response_model=OAuthLoginResponse)
 async def complete_oauth_signup(
     payload: OAuthCompleteSignupRequest,
