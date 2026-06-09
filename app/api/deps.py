@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Never
 from uuid import UUID
 
 import jwt
@@ -40,7 +40,7 @@ class CurrentUser:
         return self.email_verified_at is not None
 
 
-def raise_unauthorized() -> None:
+def raise_unauthorized() -> Never:
     raise AppException(
         code=error_codes.UNAUTHORIZED,
         message="Authentication is required.",
@@ -48,7 +48,7 @@ def raise_unauthorized() -> None:
     )
 
 
-def raise_invalid_token() -> None:
+def raise_invalid_token() -> Never:
     raise AppException(
         code=error_codes.INVALID_TOKEN,
         message="Invalid access token.",

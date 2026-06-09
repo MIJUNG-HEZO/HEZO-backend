@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Never
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -206,7 +207,7 @@ class AuthService:
             await self.session.rollback()
             raise
 
-    def raise_invalid_refresh_token(self) -> None:
+    def raise_invalid_refresh_token(self) -> Never:
         raise AppException(
             code=error_codes.INVALID_REFRESH_TOKEN,
             message="Invalid refresh token.",

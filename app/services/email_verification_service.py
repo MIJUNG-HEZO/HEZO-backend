@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from secrets import token_urlsafe
+from typing import Never
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -193,7 +194,7 @@ class EmailVerificationService:
             status_code=502,
         )
 
-    def raise_invalid_verification_token(self) -> None:
+    def raise_invalid_verification_token(self) -> Never:
         raise AppException(
             code=error_codes.INVALID_EMAIL_VERIFICATION_TOKEN,
             message="Invalid email verification token.",
