@@ -30,7 +30,7 @@ class SubscriptionService:
         plan = await self.plan_repository.get_by_id(subscription.plan_id)
         if plan is None:
             raise AppException(
-                code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                code=error_codes.PLAN_NOT_FOUND,
                 message="Active subscription plan was not found.",
                 status_code=404,
             )

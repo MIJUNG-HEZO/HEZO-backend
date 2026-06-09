@@ -1,6 +1,5 @@
 from uuid import UUID
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
@@ -109,7 +108,7 @@ class BillingService:
                 },
             )
             await self.session.commit()
-        except SQLAlchemyError:
+        except Exception:
             await self.session.rollback()
             raise
 

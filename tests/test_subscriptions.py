@@ -251,7 +251,7 @@ def test_subscription_service_raises_when_plan_is_missing() -> None:
         with pytest.raises(AppException) as exc_info:
             await subscription_service.get_my_subscription(user_id=uuid4())
 
-        assert exc_info.value.code == error_codes.SUBSCRIPTION_NOT_FOUND
+        assert exc_info.value.code == error_codes.PLAN_NOT_FOUND
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_get_my_subscription())
