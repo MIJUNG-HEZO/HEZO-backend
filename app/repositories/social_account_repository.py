@@ -44,7 +44,10 @@ class SocialAccountRepository:
     async def anonymize_by_user_id(self, user_id: UUID) -> None:
         stmt = (
             update(SocialAccount)
-            .where(SocialAccount.user_id == user_id)
+            .where(
+                SocialAccount.user_id == user_id,
+                SocialAccount.provider_user_id.not_like("deleted:%"),
+            )
             .values(
                 provider_user_id=(
                     "deleted:"

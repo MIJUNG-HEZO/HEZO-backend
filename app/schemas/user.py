@@ -5,8 +5,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.schemas.common import strip_optional_phone, validate_phone_format
+
 NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+( [A-Za-z가-힣]+)*$")
-PHONE_PATTERN = re.compile(r"^[0-9+\- ()]{7,30}$")
 
 
 class UserResponse(BaseModel):
@@ -23,6 +24,8 @@ class UserResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
+
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("name", mode="before")
     @classmethod
@@ -43,21 +46,12 @@ class UserUpdateRequest(BaseModel):
     @field_validator("phone", mode="before")
     @classmethod
     def strip_phone(cls, phone: Any) -> Any:
-        if phone is None:
-            return None
-        if not isinstance(phone, str):
-            return phone
-        phone = phone.strip()
-        return phone or None
+        return strip_optional_phone(phone)
 
     @field_validator("phone")
     @classmethod
     def validate_phone(cls, phone: str | None) -> str | None:
-        if phone is None:
-            return None
-        if not PHONE_PATTERN.fullmatch(phone):
-            raise ValueError("Phone number format is invalid.")
-        return phone
+        return validate_phone_format(phone)
 
 
 class UserModelResponse(BaseModel):

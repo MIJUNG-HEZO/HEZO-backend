@@ -27,6 +27,7 @@ class SubscriptionRepository:
             started_at=started_at or datetime.now(UTC),
         )
         self.session.add(subscription)
+        await self.session.flush()
         return subscription
 
     async def create_free_subscription(self, *, user_id: UUID, plan_id: UUID) -> Subscription:

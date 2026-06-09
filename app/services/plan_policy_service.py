@@ -28,7 +28,9 @@ class PlanPolicyService:
         self.site_repository = site_repository
 
     async def require_can_create_site(self, user_id: UUID) -> None:
-        subscription = await self.subscription_repository.get_active_by_user_id(user_id)
+        # 동시 생성 요청이 한도를 우회하지 못하도록 활성 구독 행을 잠그고
+        # 개수 확인과 사이트 생성을 직렬화한다.
+        subscription = await self.subscription_repository.get_active_by_user_id_for_update(user_id)
         if subscription is None:
             raise AppException(
                 code=error_codes.SUBSCRIPTION_NOT_FOUND,

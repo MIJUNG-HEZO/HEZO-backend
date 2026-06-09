@@ -17,11 +17,15 @@ class SiteCreateRequest(BaseModel):
     site_type: SiteType
     module_key: ModuleKey
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class SiteUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     site_type: SiteType
     module_key: ModuleKey
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class SiteResponse(BaseModel):

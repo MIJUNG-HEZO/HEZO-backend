@@ -14,3 +14,6 @@ class PasswordService:
             return self.password_hasher.verify(password_hash, password)
         except VerificationError:
             return False
+
+    def needs_rehash(self, password_hash: str) -> bool:
+        return self.password_hasher.check_needs_rehash(password_hash)

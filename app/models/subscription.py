@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index
+from sqlalchemy import DateTime, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,4 +41,10 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("idx_subscriptions_user_id", "user_id"),
         Index("idx_subscriptions_plan_id", "plan_id"),
         Index("idx_subscriptions_status", "status"),
+        Index(
+            "uq_subscriptions_active_user_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )

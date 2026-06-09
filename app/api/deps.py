@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Never
 from uuid import UUID
 
 import jwt
@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
-from app.core.config import settings
+from app.core.config import DEVELOPMENT_ENVIRONMENTS, settings
 from app.core.exceptions import AppException
 from app.db.session import get_db_session
 from app.repositories.plan_repository import PlanRepository
@@ -40,7 +40,7 @@ class CurrentUser:
         return self.email_verified_at is not None
 
 
-def raise_unauthorized() -> None:
+def raise_unauthorized() -> Never:
     raise AppException(
         code=error_codes.UNAUTHORIZED,
         message="Authentication is required.",
@@ -48,7 +48,7 @@ def raise_unauthorized() -> None:
     )
 
 
-def raise_invalid_token() -> None:
+def raise_invalid_token() -> Never:
     raise AppException(
         code=error_codes.INVALID_TOKEN,
         message="Invalid access token.",
@@ -107,7 +107,7 @@ async def require_email_verified(
 
 
 def require_development_environment() -> None:
-    if settings.app_env not in {"local", "dev", "test"}:
+    if settings.app_env not in DEVELOPMENT_ENVIRONMENTS:
         raise AppException(
             code=error_codes.FORBIDDEN,
             message="This endpoint is only available in development environments.",
