@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
+from app.core.config import settings
 from app.core.exceptions import AppException
 from app.db.session import get_db_session
 from app.repositories.plan_repository import PlanRepository
@@ -104,6 +105,15 @@ async def require_email_verified(
     return current_user
 
 
+def require_development_environment() -> None:
+    if settings.app_env not in {"local", "dev", "test"}:
+        raise AppException(
+            code=error_codes.FORBIDDEN,
+            message="This endpoint is only available in development environments.",
+            status_code=403,
+        )
+
+
 def get_site_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> SiteService:
     return SiteService(session)
 
@@ -161,5 +171,6 @@ __all__ = [
     "get_site_service",
     "get_subscription_service",
     "require_authenticated",
+    "require_development_environment",
     "require_email_verified",
 ]

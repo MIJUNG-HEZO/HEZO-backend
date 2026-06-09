@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,8 +11,11 @@ from app.api.deps import (
     CurrentUser,
     get_subscription_service,
     require_authenticated,
+    require_development_environment,
+    require_email_verified,
 )
 from app.core import error_codes
+from app.core.config import settings
 from app.core.enums import SubscriptionStatus
 from app.core.exceptions import AppException
 from app.main import app
@@ -23,6 +27,7 @@ from app.services.subscription_service import SubscriptionService
 class FakeSubscriptionService:
     def __init__(self) -> None:
         self.requested_user_id: UUID | None = None
+        self.target_plan_code: str | None = None
 
     async def get_my_subscription(self, *, user_id: UUID) -> MySubscriptionResponse:
         self.requested_user_id = user_id
@@ -40,6 +45,32 @@ class FakeSubscriptionService:
                     currency="KRW",
                     max_sites=1,
                     can_publish=False,
+                ),
+            )
+        )
+
+    async def upgrade_plan(
+        self,
+        *,
+        user_id: UUID,
+        target_plan_code: str,
+    ) -> MySubscriptionResponse:
+        self.requested_user_id = user_id
+        self.target_plan_code = target_plan_code
+        return MySubscriptionResponse(
+            subscription=SubscriptionResponse(
+                id=uuid4(),
+                status=SubscriptionStatus.ACTIVE,
+                started_at=datetime(2026, 6, 9, tzinfo=UTC),
+                ended_at=None,
+                renewed_at=None,
+                plan=SimpleNamespace(
+                    code=target_plan_code,
+                    name=target_plan_code.title(),
+                    price_monthly=29000,
+                    currency="KRW",
+                    max_sites=3,
+                    can_publish=True,
                 ),
             )
         )
@@ -181,6 +212,94 @@ def test_get_my_subscription_returns_current_user_subscription() -> None:
     assert body["subscription"]["plan"]["code"] == "FREE"
     assert body["subscription"]["plan"]["can_publish"] is False
     assert fake_subscription_service.requested_user_id == current_user.id
+
+
+def test_dev_subscription_upgrade_requires_authentication() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/dev/subscriptions/upgrade",
+        json={"plan_code": "PRO"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == error_codes.UNAUTHORIZED
+
+
+def test_dev_subscription_upgrade_requires_verified_email() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=None)
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/dev/subscriptions/upgrade",
+            json={"plan_code": "PRO"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == error_codes.EMAIL_NOT_VERIFIED
+
+
+def test_dev_subscription_upgrade_uses_current_user() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    fake_subscription_service = FakeSubscriptionService()
+
+    app.dependency_overrides[require_email_verified] = lambda: current_user
+    app.dependency_overrides[get_subscription_service] = lambda: fake_subscription_service
+
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/dev/subscriptions/upgrade",
+            json={"plan_code": "pro"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["subscription"]["plan"]["code"] == "PRO"
+    assert fake_subscription_service.requested_user_id == current_user.id
+    assert fake_subscription_service.target_plan_code == "PRO"
+
+
+def test_dev_subscription_upgrade_is_blocked_in_production() -> None:
+    fake_subscription_service = FakeSubscriptionService()
+
+    try:
+        with patch.object(settings, "app_env", "production"):
+            client = TestClient(app)
+            response = client.post(
+                "/api/v1/dev/subscriptions/upgrade",
+                json={"plan_code": "PRO"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == error_codes.FORBIDDEN
+    assert fake_subscription_service.requested_user_id is None
+
+
+def test_dev_subscription_upgrade_validates_plan_code() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+
+    app.dependency_overrides[require_email_verified] = lambda: current_user
+    app.dependency_overrides[require_development_environment] = lambda: None
+
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/dev/subscriptions/upgrade",
+            json={"plan_code": ""},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
 
 
 def test_subscription_service_returns_my_subscription_response() -> None:
