@@ -8,6 +8,7 @@ from app.core import error_codes
 from app.core.exceptions import AppException
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.social_account_repository import SocialAccountRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse
@@ -23,6 +24,7 @@ class AuthService:
         plan_repository: PlanRepository | None = None,
         subscription_repository: SubscriptionRepository | None = None,
         refresh_token_repository: RefreshTokenRepository | None = None,
+        social_account_repository: SocialAccountRepository | None = None,
         password_service: PasswordService | None = None,
         token_service: TokenService | None = None,
     ) -> None:
@@ -31,6 +33,9 @@ class AuthService:
         self.plan_repository = plan_repository or PlanRepository(session)
         self.subscription_repository = subscription_repository or SubscriptionRepository(session)
         self.refresh_token_repository = refresh_token_repository or RefreshTokenRepository(session)
+        self.social_account_repository = social_account_repository or SocialAccountRepository(
+            session
+        )
         self.password_service = password_service or PasswordService()
         self.token_service = token_service or TokenService()
 
@@ -170,8 +175,8 @@ class AuthService:
 
     async def delete_account(self, user_id: UUID) -> None:
         now = datetime.now(UTC)
-        user = await self.user_repository.get_by_id_for_update(user_id)
-        if user is None or user.deleted_at is not None:
+        user_snapshot = await self.user_repository.get_by_id(user_id)
+        if user_snapshot is None or user_snapshot.deleted_at is not None:
             raise AppException(
                 code=error_codes.UNAUTHORIZED,
                 message="Authentication is required.",
@@ -179,8 +184,18 @@ class AuthService:
             )
 
         try:
+            await self.refresh_token_repository.revoke_all_by_user_id(user_id, revoked_at=now)
+            await self.social_account_repository.anonymize_by_user_id(user_id)
+            user = await self.user_repository.get_by_id_for_update(user_id)
+            if user is None or user.deleted_at is not None:
+                await self.session.rollback()
+                raise AppException(
+                    code=error_codes.UNAUTHORIZED,
+                    message="Authentication is required.",
+                    status_code=401,
+                )
+
             await self.user_repository.soft_delete(user, deleted_at=now)
-            await self.refresh_token_repository.revoke_all_by_user_id(user.id, revoked_at=now)
             await self.session.commit()
         except SQLAlchemyError:
             await self.session.rollback()

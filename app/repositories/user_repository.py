@@ -33,6 +33,9 @@ class UserRepository:
 
     async def soft_delete(self, user: User, *, deleted_at: datetime) -> User:
         user.deleted_at = deleted_at
+        user.email = f"deleted:{user.id}:{user.email}"
+        user.password_hash = None
+        user.phone = None
         await self.session.flush()
         return user
 
