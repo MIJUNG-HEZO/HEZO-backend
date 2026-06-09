@@ -1,0 +1,1 @@
+FREE_PLAN_CODE = "FREE"

@@ -60,6 +60,10 @@ class Settings(BaseSettings):
         default="http://localhost:3000/billing/fail",
         alias="TOSS_PAYMENTS_FAIL_URL",
     )
+    mock_payment_approval_enabled: bool = Field(
+        default=False,
+        alias="MOCK_PAYMENT_APPROVAL_ENABLED",
+    )
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

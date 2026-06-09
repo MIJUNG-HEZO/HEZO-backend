@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
 from app.core.config import settings
+from app.core.constants import FREE_PLAN_CODE
 from app.core.enums import PaymentProvider, PaymentRequestStatus
 from app.core.exceptions import AppException
 from app.integrations.payments.toss_payments_client import TossPaymentsClient
@@ -31,7 +32,7 @@ class BillingService:
         billing_event_repository: BillingEventRepository | None = None,
         subscription_repository: SubscriptionRepository | None = None,
         toss_payments_client: TossPaymentsClient | None = None,
-        app_env: str | None = None,
+        mock_payment_approval_enabled: bool | None = None,
     ) -> None:
         self.session = session
         self.plan_repository = plan_repository or PlanRepository(session)
@@ -42,7 +43,11 @@ class BillingService:
         self.billing_event_repository = billing_event_repository or BillingEventRepository(session)
         self.subscription_repository = subscription_repository or SubscriptionRepository(session)
         self.toss_payments_client = toss_payments_client or TossPaymentsClient()
-        self.app_env = (app_env or settings.app_env).lower()
+        self.mock_payment_approval_enabled = (
+            settings.mock_payment_approval_enabled
+            if mock_payment_approval_enabled is None
+            else mock_payment_approval_enabled
+        )
 
     async def create_checkout(
         self,
@@ -74,7 +79,7 @@ class BillingService:
                 status_code=400,
                 details={"plan_code": plan_code},
             )
-        if plan.code == "FREE" or plan.price_monthly <= 0:
+        if plan.code == FREE_PLAN_CODE or plan.price_monthly <= 0:
             raise AppException(
                 code=error_codes.FREE_PLAN_CANNOT_CHECKOUT,
                 message="Free plan cannot create a payment checkout.",
@@ -139,10 +144,10 @@ class BillingService:
         user_id: UUID,
         payment_request_id: UUID,
     ) -> MockPaymentApprovalResponse:
-        if self.app_env not in {"local", "development", "test"}:
+        if not self.mock_payment_approval_enabled:
             raise AppException(
                 code=error_codes.FORBIDDEN,
-                message="Mock payment approval is available only in development.",
+                message="Mock payment approval is disabled.",
                 status_code=403,
             )
 
@@ -193,7 +198,7 @@ class BillingService:
                     status_code=400,
                     details={"plan_code": plan.code},
                 )
-            if plan.code == "FREE" or plan.price_monthly <= 0:
+            if plan.code == FREE_PLAN_CODE or plan.price_monthly <= 0:
                 raise AppException(
                     code=error_codes.FREE_PLAN_CANNOT_CHECKOUT,
                     message="Free plan cannot be approved as a payment.",
@@ -214,8 +219,8 @@ class BillingService:
             previous_plan = await self.plan_repository.get_by_id(subscription.plan_id)
             if previous_plan is None:
                 raise AppException(
-                    code=error_codes.SUBSCRIPTION_NOT_FOUND,
-                    message="Active subscription plan was not found.",
+                    code=error_codes.PLAN_NOT_FOUND,
+                    message="Subscription's current plan was not found.",
                     status_code=404,
                 )
 
@@ -239,10 +244,7 @@ class BillingService:
                 },
             )
             await self.session.commit()
-        except AppException:
-            await self.session.rollback()
-            raise
-        except SQLAlchemyError:
+        except Exception:
             await self.session.rollback()
             raise
 

@@ -176,6 +176,11 @@ class FakeBillingEventRepository:
         return SimpleNamespace(id=uuid4(), **kwargs)
 
 
+class FailingBillingEventRepository:
+    async def create(self, **kwargs: object) -> SimpleNamespace:
+        raise RuntimeError("Unexpected billing event failure")
+
+
 class FakeSubscriptionRepository:
     def __init__(self, subscription: SimpleNamespace | None) -> None:
         self.subscription = subscription
@@ -490,7 +495,7 @@ def test_billing_service_mock_approve_upgrades_subscription() -> None:
             payment_request_repository=payment_repository,
             subscription_repository=subscription_repository,
             billing_event_repository=billing_event_repository,
-            app_env="local",
+            mock_payment_approval_enabled=True,
         )
 
         response = await service.mock_approve(
@@ -524,9 +529,15 @@ def test_billing_service_mock_approve_upgrades_subscription() -> None:
     asyncio.run(run_mock_approve())
 
 
-def test_billing_service_mock_approve_is_blocked_in_production() -> None:
+def test_billing_service_mock_approve_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def run_mock_approve() -> None:
-        service = BillingService(session=FakeSession(), app_env="production")
+        monkeypatch.setattr(
+            "app.services.billing_service.settings.mock_payment_approval_enabled",
+            False,
+        )
+        service = BillingService(session=FakeSession())
 
         with pytest.raises(AppException) as exc_info:
             await service.mock_approve(
@@ -564,7 +575,7 @@ def test_billing_service_mock_approve_rejects_invalid_status(
         service = BillingService(
             session=session,
             payment_request_repository=FakePaymentRequestRepository(payment_request),
-            app_env="test",
+            mock_payment_approval_enabled=True,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -591,7 +602,7 @@ def test_billing_service_mock_approve_rejects_other_users_payment() -> None:
         service = BillingService(
             session=session,
             payment_request_repository=FakePaymentRequestRepository(payment_request),
-            app_env="test",
+            mock_payment_approval_enabled=True,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -624,7 +635,7 @@ def test_billing_service_mock_approve_requires_active_subscription() -> None:
             ),
             payment_request_repository=FakePaymentRequestRepository(payment_request),
             subscription_repository=FakeSubscriptionRepository(None),
-            app_env="test",
+            mock_payment_approval_enabled=True,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -647,7 +658,7 @@ def test_billing_service_mock_approve_rejects_missing_payment_request() -> None:
         service = BillingService(
             session=session,
             payment_request_repository=repository,
-            app_env="test",
+            mock_payment_approval_enabled=True,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -695,7 +706,7 @@ def test_billing_service_mock_approve_rejects_invalid_target_plan(
                 previous_plan=None,
             ),
             payment_request_repository=FakePaymentRequestRepository(payment_request),
-            app_env="test",
+            mock_payment_approval_enabled=True,
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -707,5 +718,128 @@ def test_billing_service_mock_approve_rejects_invalid_target_plan(
         assert session.rolled_back is True
         assert exc_info.value.code == expected_code
         assert exc_info.value.status_code == expected_status
+
+    asyncio.run(run_mock_approve())
+
+
+def test_billing_service_mock_approve_succeeds_with_pending_status() -> None:
+    async def run_mock_approve() -> None:
+        session = FakeSession()
+        user_id = uuid4()
+        previous_plan = make_plan(code="FREE", name="Free", price_monthly=0)
+        target_plan = make_plan(code="MAX", name="Max", price_monthly=99000)
+        payment_request = make_payment_request(
+            user_id=user_id,
+            plan_id=target_plan.id,
+            status=PaymentRequestStatus.PENDING,
+        )
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            user_id=user_id,
+            plan_id=previous_plan.id,
+            status=SubscriptionStatus.ACTIVE,
+            started_at=datetime.now(UTC),
+        )
+        service = BillingService(
+            session=session,
+            plan_repository=FakeApprovalPlanRepository(
+                target_plan=target_plan,
+                previous_plan=previous_plan,
+            ),
+            payment_request_repository=FakePaymentRequestRepository(payment_request),
+            subscription_repository=FakeSubscriptionRepository(subscription),
+            billing_event_repository=FakeBillingEventRepository(),
+            mock_payment_approval_enabled=True,
+        )
+
+        response = await service.mock_approve(
+            user_id=user_id,
+            payment_request_id=payment_request.id,
+        )
+
+        assert session.committed is True
+        assert payment_request.status == PaymentRequestStatus.APPROVED
+        assert response.current_plan_code == "MAX"
+
+    asyncio.run(run_mock_approve())
+
+
+def test_billing_service_mock_approve_rejects_missing_previous_plan() -> None:
+    async def run_mock_approve() -> None:
+        session = FakeSession()
+        user_id = uuid4()
+        target_plan = make_plan()
+        payment_request = make_payment_request(
+            user_id=user_id,
+            plan_id=target_plan.id,
+        )
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            user_id=user_id,
+            plan_id=uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            started_at=datetime.now(UTC),
+        )
+        service = BillingService(
+            session=session,
+            plan_repository=FakeApprovalPlanRepository(
+                target_plan=target_plan,
+                previous_plan=None,
+            ),
+            payment_request_repository=FakePaymentRequestRepository(payment_request),
+            subscription_repository=FakeSubscriptionRepository(subscription),
+            mock_payment_approval_enabled=True,
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await service.mock_approve(
+                user_id=user_id,
+                payment_request_id=payment_request.id,
+            )
+
+        assert session.rolled_back is True
+        assert exc_info.value.code == error_codes.PLAN_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_mock_approve())
+
+
+def test_billing_service_mock_approve_rolls_back_unexpected_exception() -> None:
+    async def run_mock_approve() -> None:
+        session = FakeSession()
+        user_id = uuid4()
+        previous_plan = make_plan(code="FREE", name="Free", price_monthly=0)
+        target_plan = make_plan()
+        payment_request = make_payment_request(
+            user_id=user_id,
+            plan_id=target_plan.id,
+        )
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            user_id=user_id,
+            plan_id=previous_plan.id,
+            status=SubscriptionStatus.ACTIVE,
+            started_at=datetime.now(UTC),
+        )
+        service = BillingService(
+            session=session,
+            plan_repository=FakeApprovalPlanRepository(
+                target_plan=target_plan,
+                previous_plan=previous_plan,
+            ),
+            payment_request_repository=FakePaymentRequestRepository(payment_request),
+            subscription_repository=FakeSubscriptionRepository(subscription),
+            billing_event_repository=FailingBillingEventRepository(),
+            mock_payment_approval_enabled=True,
+        )
+
+        with pytest.raises(RuntimeError, match="Unexpected billing event failure"):
+            await service.mock_approve(
+                user_id=user_id,
+                payment_request_id=payment_request.id,
+            )
+
+        assert session.committed is False
+        assert session.rolled_back is True
 
     asyncio.run(run_mock_approve())
