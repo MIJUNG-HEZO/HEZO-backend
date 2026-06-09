@@ -31,6 +31,11 @@ class UserRepository:
         await self.session.flush()
         return user
 
+    async def soft_delete(self, user: User, *, deleted_at: datetime) -> User:
+        user.deleted_at = deleted_at
+        await self.session.flush()
+        return user
+
     async def create(
         self,
         *,

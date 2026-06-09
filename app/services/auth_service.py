@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +88,7 @@ class AuthService:
         user = await self.user_repository.get_by_email(payload.email)
         if (
             user is None
+            or user.deleted_at is not None
             or user.password_hash is None
             or not self.password_service.verify_password(payload.password, user.password_hash)
         ):
@@ -161,6 +163,24 @@ class AuthService:
 
         try:
             await self.refresh_token_repository.revoke(stored_refresh_token, revoked_at=now)
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
+    async def delete_account(self, user_id: UUID) -> None:
+        now = datetime.now(UTC)
+        user = await self.user_repository.get_by_id_for_update(user_id)
+        if user is None or user.deleted_at is not None:
+            raise AppException(
+                code=error_codes.UNAUTHORIZED,
+                message="Authentication is required.",
+                status_code=401,
+            )
+
+        try:
+            await self.user_repository.soft_delete(user, deleted_at=now)
+            await self.refresh_token_repository.revoke_all_by_user_id(user.id, revoked_at=now)
             await self.session.commit()
         except SQLAlchemyError:
             await self.session.rollback()

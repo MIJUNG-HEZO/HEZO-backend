@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.refresh_token import RefreshToken
@@ -20,6 +20,17 @@ class RefreshTokenRepository:
         refresh_token.revoked_at = revoked_at
         await self.session.flush()
         return refresh_token
+
+    async def revoke_all_by_user_id(self, user_id: UUID, *, revoked_at: datetime) -> None:
+        stmt = (
+            update(RefreshToken)
+            .where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=revoked_at)
+        )
+        await self.session.execute(stmt)
 
     async def create(
         self,
