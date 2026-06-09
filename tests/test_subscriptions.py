@@ -79,6 +79,17 @@ class FakeSubscriptionRepository:
         return subscription
 
 
+class FailingChangePlanSubscriptionRepository(FakeSubscriptionRepository):
+    async def change_plan(
+        self,
+        subscription: SimpleNamespace,
+        *,
+        plan_id: UUID,
+        started_at: datetime,
+    ) -> SimpleNamespace:
+        raise RuntimeError("Unexpected subscription change failure")
+
+
 class FakePlanRepository:
     def __init__(
         self,
@@ -367,6 +378,37 @@ def test_subscription_service_rejects_upgrade_when_target_plan_is_missing() -> N
     asyncio.run(run_upgrade_plan())
 
 
+def test_subscription_service_rejects_upgrade_when_current_plan_is_missing() -> None:
+    async def run_upgrade_plan() -> None:
+        missing_current_plan_id = uuid4()
+        pro_plan = make_plan(code="PRO", price_monthly=29000)
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            plan_id=missing_current_plan_id,
+            status=SubscriptionStatus.ACTIVE,
+            started_at=datetime(2026, 6, 7, tzinfo=UTC),
+            ended_at=None,
+            renewed_at=None,
+        )
+        subscription_service = SubscriptionService(session=FakeServiceSession())
+        subscription_service.subscription_repository = FakeSubscriptionRepository(subscription)
+        subscription_service.plan_repository = FakePlanRepository(
+            plans_by_id={},
+            plans_by_code={pro_plan.code: pro_plan},
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await subscription_service.upgrade_plan(
+                user_id=uuid4(),
+                target_plan_code="PRO",
+            )
+
+        assert exc_info.value.code == error_codes.PLAN_NOT_FOUND
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(run_upgrade_plan())
+
+
 def test_subscription_service_rejects_inactive_target_plan() -> None:
     async def run_upgrade_plan() -> None:
         free_plan = make_plan(code="FREE", price_monthly=0)
@@ -394,6 +436,41 @@ def test_subscription_service_rejects_inactive_target_plan() -> None:
 
         assert exc_info.value.code == error_codes.PLAN_NOT_ACTIVE
         assert exc_info.value.status_code == 400
+
+    asyncio.run(run_upgrade_plan())
+
+
+def test_subscription_service_rolls_back_unexpected_upgrade_failure() -> None:
+    async def run_upgrade_plan() -> None:
+        session = FakeServiceSession()
+        user_id = uuid4()
+        free_plan = make_plan(code="FREE", price_monthly=0)
+        pro_plan = make_plan(code="PRO", price_monthly=29000)
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            plan_id=free_plan.id,
+            status=SubscriptionStatus.ACTIVE,
+            started_at=datetime(2026, 6, 7, tzinfo=UTC),
+            ended_at=None,
+            renewed_at=None,
+        )
+        subscription_service = SubscriptionService(session=session)
+        subscription_service.subscription_repository = FailingChangePlanSubscriptionRepository(
+            subscription
+        )
+        subscription_service.plan_repository = FakePlanRepository(
+            plans_by_id={free_plan.id: free_plan, pro_plan.id: pro_plan},
+            plans_by_code={pro_plan.code: pro_plan},
+        )
+
+        with pytest.raises(RuntimeError):
+            await subscription_service.upgrade_plan(
+                user_id=user_id,
+                target_plan_code="PRO",
+            )
+
+        assert session.committed is False
+        assert session.rolled_back is True
 
     asyncio.run(run_upgrade_plan())
 
