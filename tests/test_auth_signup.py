@@ -97,6 +97,15 @@ class FakeUserRepository:
         self.locked_user_id = user_id
         return self.existing_user
 
+    async def update_password_hash(
+        self,
+        user: SimpleNamespace,
+        *,
+        password_hash: str,
+    ) -> SimpleNamespace:
+        user.password_hash = password_hash
+        return user
+
     async def soft_delete(
         self,
         user: SimpleNamespace,
@@ -224,6 +233,8 @@ class FakePasswordService:
         self.verified_password: str | None = None
         self.verified_hash: str | None = None
         self.verify_result = True
+        self.needs_rehash_result = False
+        self.checked_rehash_hash: str | None = None
 
     def hash_password(self, password: str) -> str:
         self.raw_password = password
@@ -233,6 +244,10 @@ class FakePasswordService:
         self.verified_password = password
         self.verified_hash = password_hash
         return self.verify_result
+
+    def needs_rehash(self, password_hash: str) -> bool:
+        self.checked_rehash_hash = password_hash
+        return self.needs_rehash_result
 
 
 class FakeTokenService:
@@ -539,6 +554,38 @@ def test_auth_service_login_creates_tokens_and_stores_refresh_token_hash() -> No
     asyncio.run(run_login())
 
 
+def test_auth_service_login_rehashes_password_when_parameters_outdated() -> None:
+    async def run_login() -> None:
+        user_id = uuid4()
+        session = FakeSession()
+        user_repository = FakeUserRepository(
+            existing_user=SimpleNamespace(
+                id=user_id,
+                email="user@example.com",
+                password_hash="outdated-hash",
+                deleted_at=None,
+            )
+        )
+        password_service = FakePasswordService()
+        password_service.needs_rehash_result = True
+        auth_service = AuthService(
+            session=session,
+            user_repository=user_repository,
+            refresh_token_repository=FakeRefreshTokenRepository(),
+            password_service=password_service,
+            token_service=FakeTokenService(),
+        )
+        payload = LoginRequest(email="user@example.com", password="safe-password")
+
+        await auth_service.login(payload)
+
+        assert password_service.checked_rehash_hash == "outdated-hash"
+        assert user_repository.existing_user.password_hash == "argon2id-hash"
+        assert session.committed is True
+
+    asyncio.run(run_login())
+
+
 def test_auth_service_login_rejects_deleted_user() -> None:
     async def run_login() -> None:
         session = FakeSession()
@@ -621,12 +668,6 @@ def test_auth_service_refresh_rotates_refresh_token() -> None:
         SimpleNamespace(
             id=uuid4(),
             user_id=uuid4(),
-            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-            revoked_at=datetime(2026, 6, 8, tzinfo=UTC),
-        ),
-        SimpleNamespace(
-            id=uuid4(),
-            user_id=uuid4(),
             expires_at=datetime(2026, 6, 1, tzinfo=UTC),
             revoked_at=None,
         ),
@@ -654,6 +695,42 @@ def test_auth_service_refresh_rejects_invalid_refresh_token(
         assert exc_info.value.code == error_codes.INVALID_REFRESH_TOKEN
         assert exc_info.value.status_code == 401
         assert session.committed is False
+
+    asyncio.run(run_refresh())
+
+
+def test_auth_service_refresh_revokes_all_tokens_when_reused() -> None:
+    async def run_refresh() -> None:
+        user_id = uuid4()
+        reused_refresh_token = SimpleNamespace(
+            id=uuid4(),
+            user_id=user_id,
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            revoked_at=datetime(2026, 6, 8, tzinfo=UTC),
+        )
+        session = FakeSession()
+        refresh_token_repository = FakeRefreshTokenRepository(
+            stored_refresh_token=reused_refresh_token,
+        )
+        auth_service = AuthService(
+            session=session,
+            user_repository=FakeUserRepository(
+                existing_user=SimpleNamespace(id=user_id, deleted_at=None)
+            ),
+            refresh_token_repository=refresh_token_repository,
+            token_service=FakeTokenService(),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await auth_service.refresh("refresh-token")
+
+        assert exc_info.value.code == error_codes.INVALID_REFRESH_TOKEN
+        assert exc_info.value.status_code == 401
+        # 탈취 정황이므로 해당 사용자의 모든 리프레시 토큰을 폐기하고 커밋해야 한다.
+        assert refresh_token_repository.revoked_user_id == user_id
+        assert refresh_token_repository.revoked_at is not None
+        assert session.committed is True
+        assert session.rolled_back is False
 
     asyncio.run(run_refresh())
 

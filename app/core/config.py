@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 DEVELOPMENT_ENVIRONMENTS = frozenset({"local", "dev", "test"})
+# staging은 운영과 동일한 보안 기준(쿠키 보안·비밀값 검증)과 문서 비공개를 적용하기 위해
+# 운영 환경군으로 분류한다. 운영 배포 전 검증 환경이므로 fail-closed를 우선한다.
 PRODUCTION_ENVIRONMENTS = frozenset({"staging", "production", "prod"})
 SUPPORTED_JWT_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
 JWT_SECRET_MIN_LENGTH = 32

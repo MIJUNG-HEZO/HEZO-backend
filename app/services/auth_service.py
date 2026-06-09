@@ -130,28 +130,32 @@ class AuthService:
     async def refresh(self, refresh_token: str) -> tuple[LoginResponse, str]:
         now = datetime.now(UTC)
         refresh_token_hash = self.token_service.hash_refresh_token(refresh_token)
-        stored_refresh_token = await self.refresh_token_repository.get_by_token_hash_for_update(
-            refresh_token_hash
-        )
-        if stored_refresh_token is None or stored_refresh_token.expires_at <= now:
-            self.raise_invalid_refresh_token()
-
-        # 이미 회전(폐기)된 토큰이 다시 제시되면 탈취 정황으로 보고
-        # 해당 사용자의 모든 리프레시 토큰을 폐기해 세션 전체를 무효화한다.
-        if stored_refresh_token.revoked_at is not None:
-            await self.revoke_all_refresh_tokens(stored_refresh_token.user_id, revoked_at=now)
-            self.raise_invalid_refresh_token()
-
-        user = await self.user_repository.get_by_id_for_update(stored_refresh_token.user_id)
-        if user is None or user.deleted_at is not None:
-            self.raise_invalid_refresh_token()
-
-        new_access_token = self.token_service.create_access_token(user_id=user.id)
-        new_refresh_token = self.token_service.create_refresh_token()
-        new_refresh_token_hash = self.token_service.hash_refresh_token(new_refresh_token)
-        new_refresh_token_expires_at = self.token_service.get_refresh_token_expires_at()
-
         try:
+            stored_refresh_token = await self.refresh_token_repository.get_by_token_hash_for_update(
+                refresh_token_hash
+            )
+            if stored_refresh_token is None or stored_refresh_token.expires_at <= now:
+                self.raise_invalid_refresh_token()
+
+            # 이미 회전(폐기)된 토큰이 다시 제시되면 탈취 정황으로 보고
+            # 해당 사용자의 모든 리프레시 토큰을 폐기해 세션 전체를 무효화한다.
+            if stored_refresh_token.revoked_at is not None:
+                await self.refresh_token_repository.revoke_all_by_user_id(
+                    stored_refresh_token.user_id,
+                    revoked_at=now,
+                )
+                await self.session.commit()
+                self.raise_invalid_refresh_token()
+
+            user = await self.user_repository.get_by_id_for_update(stored_refresh_token.user_id)
+            if user is None or user.deleted_at is not None:
+                self.raise_invalid_refresh_token()
+
+            new_access_token = self.token_service.create_access_token(user_id=user.id)
+            new_refresh_token = self.token_service.create_refresh_token()
+            new_refresh_token_hash = self.token_service.hash_refresh_token(new_refresh_token)
+            new_refresh_token_expires_at = self.token_service.get_refresh_token_expires_at()
+
             await self.refresh_token_repository.revoke(stored_refresh_token, revoked_at=now)
             await self.refresh_token_repository.create(
                 user_id=user.id,
@@ -188,7 +192,6 @@ class AuthService:
             # 사용자 행을 먼저 잠그고 탈퇴 여부를 확인한 뒤 후속 작업을 수행한다.
             user = await self.user_repository.get_by_id_for_update(user_id)
             if user is None or user.deleted_at is not None:
-                await self.session.rollback()
                 raise AppException(
                     code=error_codes.UNAUTHORIZED,
                     message="Authentication is required.",
@@ -198,14 +201,6 @@ class AuthService:
             await self.refresh_token_repository.revoke_all_by_user_id(user_id, revoked_at=now)
             await self.social_account_repository.anonymize_by_user_id(user_id)
             await self.user_repository.soft_delete(user, deleted_at=now)
-            await self.session.commit()
-        except SQLAlchemyError:
-            await self.session.rollback()
-            raise
-
-    async def revoke_all_refresh_tokens(self, user_id: UUID, *, revoked_at: datetime) -> None:
-        try:
-            await self.refresh_token_repository.revoke_all_by_user_id(user_id, revoked_at=revoked_at)
             await self.session.commit()
         except SQLAlchemyError:
             await self.session.rollback()
