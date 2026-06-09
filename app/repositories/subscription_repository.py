@@ -43,3 +43,30 @@ class SubscriptionRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_active_by_user_id_for_update(self, user_id: UUID) -> Subscription | None:
+        stmt = (
+            select(Subscription)
+            .where(
+                Subscription.user_id == user_id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+            )
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def change_plan(
+        self,
+        subscription: Subscription,
+        *,
+        plan_id: UUID,
+        started_at: datetime,
+    ) -> Subscription:
+        subscription.plan_id = plan_id
+        subscription.status = SubscriptionStatus.ACTIVE
+        subscription.started_at = started_at
+        subscription.ended_at = None
+        subscription.renewed_at = None
+        await self.session.flush()
+        return subscription
