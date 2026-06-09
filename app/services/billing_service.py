@@ -1,9 +1,9 @@
 from uuid import UUID
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
+from app.core.constants import FREE_PLAN_CODE
 from app.core.enums import PaymentProvider, PaymentRequestStatus
 from app.core.exceptions import AppException
 from app.integrations.payments.toss_payments_client import TossPaymentsClient
@@ -63,7 +63,7 @@ class BillingService:
                 status_code=400,
                 details={"plan_code": plan_code},
             )
-        if plan.code == "FREE" or plan.price_monthly <= 0:
+        if plan.code == FREE_PLAN_CODE or plan.price_monthly <= 0:
             raise AppException(
                 code=error_codes.FREE_PLAN_CANNOT_CHECKOUT,
                 message="Free plan cannot create a payment checkout.",
@@ -108,7 +108,7 @@ class BillingService:
                 },
             )
             await self.session.commit()
-        except SQLAlchemyError:
+        except Exception:
             await self.session.rollback()
             raise
 

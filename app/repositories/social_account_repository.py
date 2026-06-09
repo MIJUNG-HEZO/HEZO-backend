@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import String, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.social_account import SocialAccount
@@ -40,3 +40,19 @@ class SocialAccountRepository:
         self.session.add(social_account)
         await self.session.flush()
         return social_account
+
+    async def anonymize_by_user_id(self, user_id: UUID) -> None:
+        stmt = (
+            update(SocialAccount)
+            .where(SocialAccount.user_id == user_id)
+            .values(
+                provider_user_id=(
+                    "deleted:"
+                    + SocialAccount.id.cast(String)
+                    + ":"
+                    + SocialAccount.provider_user_id
+                ),
+                email=None,
+            )
+        )
+        await self.session.execute(stmt)
