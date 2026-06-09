@@ -65,7 +65,7 @@ class FakeSubscriptionService:
                 ended_at=None,
                 renewed_at=None,
                 plan=SimpleNamespace(
-                    code=target_plan_code.upper(),
+                    code=target_plan_code,
                     name=target_plan_code.title(),
                     price_monthly=29000,
                     currency="KRW",
@@ -267,11 +267,7 @@ def test_dev_subscription_upgrade_uses_current_user() -> None:
 
 
 def test_dev_subscription_upgrade_is_blocked_in_production() -> None:
-    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
     fake_subscription_service = FakeSubscriptionService()
-
-    app.dependency_overrides[require_email_verified] = lambda: current_user
-    app.dependency_overrides[get_subscription_service] = lambda: fake_subscription_service
 
     try:
         with patch.object(settings, "app_env", "production"):
