@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import SubscriptionStatus
 from app.schemas.plan import PlanResponse
@@ -20,3 +20,7 @@ class SubscriptionResponse(BaseModel):
 
 class MySubscriptionResponse(BaseModel):
     subscription: SubscriptionResponse
+
+
+class SubscriptionUpgradeRequest(BaseModel):
+    plan_code: str = Field(min_length=1, max_length=50)
