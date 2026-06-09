@@ -43,6 +43,11 @@ class UserRepository:
         await self.session.flush()
         return user
 
+    async def update_password_hash(self, user: User, *, password_hash: str) -> User:
+        user.password_hash = password_hash
+        await self.session.flush()
+        return user
+
     async def soft_delete(self, user: User, *, deleted_at: datetime) -> User:
         user.deleted_at = deleted_at
         user.email = f"deleted:{user.id}:{user.email}"

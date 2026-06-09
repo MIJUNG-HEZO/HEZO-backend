@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
-from app.core.config import settings
+from app.core.config import DEVELOPMENT_ENVIRONMENTS, settings
 from app.core.exceptions import AppException
 from app.db.session import get_db_session
 from app.repositories.plan_repository import PlanRepository
@@ -107,7 +107,7 @@ async def require_email_verified(
 
 
 def require_development_environment() -> None:
-    if settings.app_env not in {"local", "dev", "test"}:
+    if settings.app_env not in DEVELOPMENT_ENVIRONMENTS:
         raise AppException(
             code=error_codes.FORBIDDEN,
             message="This endpoint is only available in development environments.",

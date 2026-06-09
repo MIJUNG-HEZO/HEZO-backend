@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
-from app.core.config import settings
+from app.core.config import DEVELOPMENT_ENVIRONMENTS, settings
 from app.core.exceptions import AppException
 from app.integrations.email.email_service import EmailMessage, EmailService
 from app.integrations.email.smtp_email_service import SmtpEmailService
@@ -172,7 +172,7 @@ class EmailVerificationService:
         return f"{base_url}/email-verification?{query}"
 
     def build_dev_verification_url(self, verification_url: str) -> str | None:
-        if settings.app_env not in {"local", "dev", "test"}:
+        if settings.app_env not in DEVELOPMENT_ENVIRONMENTS:
             return None
         return verification_url
 
@@ -185,7 +185,7 @@ class EmailVerificationService:
     def should_send_verification_email(self) -> bool:
         if self.email_service_configured:
             return True
-        if settings.app_env in {"local", "dev", "test"}:
+        if settings.app_env in DEVELOPMENT_ENVIRONMENTS:
             return False
         raise AppException(
             code=error_codes.EXTERNAL_SERVICE_ERROR,

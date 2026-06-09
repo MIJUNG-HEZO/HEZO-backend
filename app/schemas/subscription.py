@@ -25,6 +25,8 @@ class MySubscriptionResponse(BaseModel):
 class SubscriptionUpgradeRequest(BaseModel):
     plan_code: str = Field(min_length=1, max_length=50)
 
+    model_config = ConfigDict(extra="forbid")
+
     @field_validator("plan_code")
     @classmethod
     def normalize_plan_code(cls, value: str) -> str:

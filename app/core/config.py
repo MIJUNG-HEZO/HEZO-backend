@@ -1,16 +1,25 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+DEVELOPMENT_ENVIRONMENTS = frozenset({"local", "dev", "test"})
+PRODUCTION_ENVIRONMENTS = frozenset({"staging", "production", "prod"})
+SUPPORTED_JWT_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
+JWT_SECRET_MIN_LENGTH = 32
 
 
 class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = Field(default="HEZO API", alias="APP_NAME")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
+    cors_allowed_origins: str = Field(
+        default="http://localhost:3000,http://localhost:3001",
+        alias="CORS_ALLOWED_ORIGINS",
+    )
     database_url: str = Field(alias="DATABASE_URL")
     jwt_secret: str = Field(alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
@@ -69,6 +78,36 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env in PRODUCTION_ENVIRONMENTS
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_jwt_algorithm(self) -> "Settings":
+        if self.jwt_algorithm not in SUPPORTED_JWT_ALGORITHMS:
+            raise ValueError(
+                f"JWT_ALGORITHM must be one of {sorted(SUPPORTED_JWT_ALGORITHMS)}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if not self.is_production:
+            return self
+
+        if len(self.jwt_secret) < JWT_SECRET_MIN_LENGTH:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least {JWT_SECRET_MIN_LENGTH} characters "
+                "in production environments."
+            )
+        if not self.refresh_token_cookie_secure:
+            raise ValueError("COOKIE_SECURE must be true in production environments.")
+        return self
 
 
 @lru_cache

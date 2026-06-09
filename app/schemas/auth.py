@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.schemas.common import strip_optional_phone, validate_phone_format
+
 NAME_PATTERN = re.compile(r"^[A-Za-z가-힣]+(?:[ A-Za-z가-힣]*[A-Za-z가-힣])?$")
 
 
@@ -13,6 +15,8 @@ class SignupRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     name: str = Field(min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
+
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("email")
     @classmethod
@@ -29,12 +33,12 @@ class SignupRequest(BaseModel):
     @field_validator("phone", mode="before")
     @classmethod
     def strip_phone(cls, phone: Any) -> Any:
-        if phone is None:
-            return None
-        if not isinstance(phone, str):
-            return phone
-        phone = phone.strip()
-        return phone or None
+        return strip_optional_phone(phone)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, phone: str | None) -> str | None:
+        return validate_phone_format(phone)
 
 
 class SignupResponse(BaseModel):
@@ -53,6 +57,8 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
 
+    model_config = ConfigDict(extra="forbid")
+
     @field_validator("email")
     @classmethod
     def normalize_email(cls, email: EmailStr) -> str:
@@ -67,6 +73,8 @@ class LoginResponse(BaseModel):
 class OAuthProviderLoginRequest(BaseModel):
     code: str = Field(min_length=1, max_length=2048)
     redirect_uri: str = Field(min_length=1, max_length=512)
+
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("code", "redirect_uri", mode="before")
     @classmethod
@@ -99,6 +107,8 @@ class OAuthCompleteSignupRequest(BaseModel):
     email: EmailStr
     name: str = Field(min_length=1, max_length=100)
 
+    model_config = ConfigDict(extra="forbid")
+
     @field_validator("signup_token", "name", mode="before")
     @classmethod
     def strip_complete_signup_value(cls, value: Any) -> Any:
@@ -126,6 +136,8 @@ class EmailVerificationRequestResponse(BaseModel):
 
 class EmailVerificationConfirmRequest(BaseModel):
     token: str = Field(min_length=1, max_length=256)
+
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("token", mode="before")
     @classmethod
