@@ -321,6 +321,54 @@ def test_user_service_update_me_preserves_omitted_name() -> None:
     asyncio.run(run_service())
 
 
+def test_user_service_update_me_clears_phone_when_null_is_sent() -> None:
+    async def run_service() -> None:
+        session = FakeAsyncSession()
+        user = make_user()
+        user.phone = "010-0000-0000"
+        repository = FakeUserRepository(user)
+        service = UserService(session)  # type: ignore[arg-type]
+        service.user_repository = repository  # type: ignore[assignment]
+
+        response = await service.update_me(
+            user_id=user.id,
+            payload=UserUpdateRequest(name="홍길동", phone=None),
+        )
+
+        assert repository.updated_kwargs == {
+            "user": user,
+            "name": "홍길동",
+            "phone": None,
+        }
+        assert response.phone is None
+
+    asyncio.run(run_service())
+
+
+def test_user_service_update_me_preserves_phone_when_omitted() -> None:
+    async def run_service() -> None:
+        session = FakeAsyncSession()
+        user = make_user()
+        user.phone = "010-0000-0000"
+        repository = FakeUserRepository(user)
+        service = UserService(session)  # type: ignore[arg-type]
+        service.user_repository = repository  # type: ignore[assignment]
+
+        response = await service.update_me(
+            user_id=user.id,
+            payload=UserUpdateRequest(name="Kim Hezo"),
+        )
+
+        assert repository.updated_kwargs == {
+            "user": user,
+            "name": "Kim Hezo",
+            "phone": "010-0000-0000",
+        }
+        assert response.phone == "010-0000-0000"
+
+    asyncio.run(run_service())
+
+
 def test_user_service_update_me_rejects_deleted_user() -> None:
     async def run_service() -> None:
         session = FakeAsyncSession()

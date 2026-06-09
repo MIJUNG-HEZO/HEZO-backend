@@ -38,8 +38,8 @@ class UserService:
         try:
             updated_user = await self.user_repository.update_profile(
                 user=user,
-                name=payload.name or user.name,
-                phone=payload.phone if payload.phone is not None else user.phone,
+                name=payload.name if payload.name is not None else user.name,
+                phone=payload.phone if "phone" in payload.model_fields_set else user.phone,
             )
             await self.session.commit()
             await self.session.refresh(updated_user)
