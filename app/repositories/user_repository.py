@@ -31,6 +31,18 @@ class UserRepository:
         await self.session.flush()
         return user
 
+    async def update_profile(
+        self,
+        *,
+        user: User,
+        name: str,
+        phone: str | None,
+    ) -> User:
+        user.name = name
+        user.phone = phone
+        await self.session.flush()
+        return user
+
     async def create(
         self,
         *,

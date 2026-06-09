@@ -24,6 +24,7 @@ from app.services.plan_service import PlanService
 from app.services.site_service import SiteService
 from app.services.subscription_service import SubscriptionService
 from app.services.token_service import TokenService
+from app.services.user_service import UserService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -149,6 +150,10 @@ def get_billing_service(
     return BillingService(session)
 
 
+def get_user_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> UserService:
+    return UserService(session)
+
+
 __all__ = [
     "CurrentUser",
     "get_auth_service",
@@ -160,6 +165,7 @@ __all__ = [
     "get_plan_service",
     "get_site_service",
     "get_subscription_service",
+    "get_user_service",
     "require_authenticated",
     "require_email_verified",
 ]

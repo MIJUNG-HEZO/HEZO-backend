@@ -6,6 +6,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.plans import router as plans_router
 from app.api.v1.sites import router as sites_router
 from app.api.v1.subscriptions import router as subscriptions_router
+from app.api.v1.users import router as users_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -14,3 +15,4 @@ api_router.include_router(health_router)
 api_router.include_router(plans_router)
 api_router.include_router(sites_router)
 api_router.include_router(subscriptions_router)
+api_router.include_router(users_router)
