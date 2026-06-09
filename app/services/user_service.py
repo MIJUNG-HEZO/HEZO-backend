@@ -27,6 +27,17 @@ class UserService:
         return self._to_response(user)
 
     async def update_me(self, *, user_id: UUID, payload: UserUpdateRequest) -> UserResponse:
+        has_profile_updates = payload.name is not None or "phone" in payload.model_fields_set
+        if not has_profile_updates:
+            user = await self.user_repository.get_by_id(user_id)
+            if user is None or user.deleted_at is not None:
+                raise AppException(
+                    code=error_codes.USER_NOT_FOUND,
+                    message="User was not found.",
+                    status_code=404,
+                )
+            return self._to_response(user)
+
         user = await self.user_repository.get_by_id_for_update(user_id)
         if user is None or user.deleted_at is not None:
             raise AppException(
@@ -34,9 +45,6 @@ class UserService:
                 message="User was not found.",
                 status_code=404,
             )
-
-        if not payload.model_fields_set:
-            return self._to_response(user)
 
         try:
             updated_user = await self.user_repository.update_profile(

@@ -39,7 +39,7 @@ class FakeUserService:
         return UserResponse(
             id=user_id,
             email="user@example.com",
-            name=payload.name or "홍길동",
+            name=payload.name if payload.name is not None else "홍길동",
             phone=payload.phone,
             email_verified_at=datetime(2026, 6, 9, tzinfo=UTC),
             email_verified=True,
@@ -52,6 +52,7 @@ class FakeUserRepository:
     def __init__(self, user: SimpleNamespace | None) -> None:
         self.user = user
         self.updated_kwargs: dict[str, object] | None = None
+        self.get_for_update_called = False
 
     async def get_by_id(self, user_id: UUID) -> SimpleNamespace | None:
         if self.user is not None:
@@ -59,6 +60,7 @@ class FakeUserRepository:
         return self.user
 
     async def get_by_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
+        self.get_for_update_called = True
         if self.user is not None:
             self.user.requested_user_id = user_id
         return self.user
@@ -331,6 +333,30 @@ def test_user_service_update_me_returns_without_write_when_payload_is_empty() ->
         assert repository.updated_kwargs is None
         assert response.name == user.name
         assert response.phone == user.phone
+        assert repository.get_for_update_called is False
+        assert session.committed is False
+        assert session.refreshed is False
+
+    asyncio.run(run_service())
+
+
+def test_user_service_update_me_returns_without_write_when_only_name_null_is_sent() -> None:
+    async def run_service() -> None:
+        session = FakeAsyncSession()
+        user = make_user()
+        repository = FakeUserRepository(user)
+        service = UserService(session)  # type: ignore[arg-type]
+        service.user_repository = repository  # type: ignore[assignment]
+
+        response = await service.update_me(
+            user_id=user.id,
+            payload=UserUpdateRequest(name=None),
+        )
+
+        assert repository.updated_kwargs is None
+        assert response.name == user.name
+        assert response.phone == user.phone
+        assert repository.get_for_update_called is False
         assert session.committed is False
         assert session.refreshed is False
 
