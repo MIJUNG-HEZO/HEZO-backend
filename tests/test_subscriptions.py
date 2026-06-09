@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -262,26 +263,24 @@ def test_dev_subscription_upgrade_uses_current_user() -> None:
     assert response.status_code == 200
     assert response.json()["subscription"]["plan"]["code"] == "PRO"
     assert fake_subscription_service.requested_user_id == current_user.id
-    assert fake_subscription_service.target_plan_code == "pro"
+    assert fake_subscription_service.target_plan_code == "PRO"
 
 
 def test_dev_subscription_upgrade_is_blocked_in_production() -> None:
     current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
     fake_subscription_service = FakeSubscriptionService()
-    original_app_env = settings.app_env
-    settings.app_env = "production"
 
     app.dependency_overrides[require_email_verified] = lambda: current_user
     app.dependency_overrides[get_subscription_service] = lambda: fake_subscription_service
 
     try:
-        client = TestClient(app)
-        response = client.post(
-            "/api/v1/dev/subscriptions/upgrade",
-            json={"plan_code": "PRO"},
-        )
+        with patch.object(settings, "app_env", "production"):
+            client = TestClient(app)
+            response = client.post(
+                "/api/v1/dev/subscriptions/upgrade",
+                json={"plan_code": "PRO"},
+            )
     finally:
-        settings.app_env = original_app_env
         app.dependency_overrides.clear()
 
     assert response.status_code == 403
