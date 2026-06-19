@@ -6,6 +6,7 @@ from typing import Annotated
 from uuid import UUID
 
 import boto3
+import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -16,6 +17,8 @@ from app.api.deps import (
     require_authenticated,
     require_email_verified,
 )
+from app.core.config import settings
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.site import (
     SiteCreateRequest,
     SiteListResponse,
@@ -552,4 +555,87 @@ async def create_site(
         user_id=current_user.id,
         email_verified=current_user.email_verified,
         payload=payload,
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 챗봇 프록시 — P1 AgentCore /invocations 로 중계
+# ---------------------------------------------------------------------------
+
+_P1_MOCK_MESSAGES = [
+    "안녕하세요! 비즈니스 이름을 알려주세요.",
+    "감사합니다. 주요 서비스나 제품을 3가지 이내로 알려주시겠어요?",
+    "좋습니다. 연락처(전화번호)를 알려주세요.",
+    "거의 다 됐어요. 주소를 알려주시겠어요?",
+    "필요한 정보가 모두 수집됐습니다. 홈페이지 프리뷰를 생성할게요!",
+]
+_p1_mock_index: dict[str, int] = {}
+
+
+@router.post("/{site_id}/chat", response_model=ChatResponse)
+async def chat_with_p1(
+    site_id: UUID,
+    payload: ChatRequest,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> ChatResponse:
+    """
+    P1 챗봇 에이전트 프록시.
+    - P1_AGENT_ENDPOINT 설정됨: AgentCore /invocations로 포워딩
+    - P1_AGENT_ENDPOINT 미설정: 순차 mock 응답 (로컬 개발용)
+    """
+    sid = str(site_id)
+    session_key = f"{sid}:{payload.session_id}"
+    endpoint = settings.p1_agent_endpoint
+
+    if not endpoint:
+        idx = _p1_mock_index.get(session_key, 0)
+        msg = _P1_MOCK_MESSAGES[min(idx, len(_P1_MOCK_MESSAGES) - 1)]
+        _p1_mock_index[session_key] = idx + 1
+        turn_done = idx >= len(_P1_MOCK_MESSAGES) - 1
+        return ChatResponse(
+            session_id=payload.session_id,
+            assistant_message=msg,
+            turn_status="ready_for_contract_compile" if turn_done else "answer_accepted",
+            next_stage="contract_compile" if turn_done else "proactive_questioning",
+            mock=True,
+        )
+
+    agentcore_payload = {
+        "action": "chat_turn",
+        "session_id": payload.session_id,
+        "site_id": sid,
+        "user_id": str(current_user.id),
+        "user_message": payload.user_message,
+        "domain": payload.domain,
+        "template_id": payload.template_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{endpoint.rstrip('/')}/invocations",
+                json=agentcore_payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("P1 AgentCore 오류 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
+        ) from e
+    except httpx.RequestError as e:
+        logger.error("P1 AgentCore 연결 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="챗봇 서비스에 연결할 수 없습니다.",
+        ) from e
+
+    return ChatResponse(
+        session_id=payload.session_id,
+        assistant_message=data.get("assistant_message", ""),
+        turn_status=data.get("turn_status", "answer_accepted"),
+        next_stage=data.get("next_stage", "proactive_questioning"),
+        slot_filled=data.get("slot_filled", {}),
+        missing_slots=data.get("missing_slots", []),
+        mock=False,
     )
