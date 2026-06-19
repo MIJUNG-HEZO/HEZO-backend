@@ -56,6 +56,12 @@ class UserRepository:
         await self.session.flush()
         return user
 
+    async def list_all(self) -> list[User]:
+        result = await self.session.execute(
+            select(User).order_by(User.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def create(
         self,
         *,
