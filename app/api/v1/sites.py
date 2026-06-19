@@ -410,12 +410,54 @@ async def create_contract(
     return None
 
 
-@router.post("/{site_id}/preview", status_code=status.HTTP_204_NO_CONTENT)
+class _PreviewResponse(BaseModel):
+    site_id: str
+    preview_mode: str  # "triggered" | "mock"
+    preview_url: str | None = None
+    message: str
+
+
+@router.post("/{site_id}/preview", response_model=_PreviewResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_preview(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
-) -> None:
-    return None
+) -> _PreviewResponse:
+    """
+    P3 빌드 워커 preview 모드 트리거.
+    - P3_BUILD_ENDPOINT 설정됨: P3 HTTP 서비스에 비동기 트리거
+    - P3_BUILD_ENDPOINT 미설정: mock 202 반환 (로컬 개발용)
+    """
+    sid = str(site_id)
+    endpoint = settings.p3_build_endpoint
+    if not endpoint:
+        return _PreviewResponse(
+            site_id=sid,
+            preview_mode="mock",
+            message="P3_BUILD_ENDPOINT 미설정 — 로컬 개발 모드입니다.",
+        )
+
+    contract = _build_contract(sid)
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{endpoint.rstrip('/')}/invocations",
+                json={"site_id": sid, "mode": "preview", "contract": contract},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        logger.error("P3 preview 트리거 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="프리뷰 생성 서비스에 연결할 수 없습니다.",
+        ) from e
+
+    return _PreviewResponse(
+        site_id=sid,
+        preview_mode="triggered",
+        preview_url=data.get("preview_url"),
+        message="프리뷰 생성이 시작되었습니다.",
+    )
 
 
 @router.post("/{site_id}/preview/retry-image", status_code=status.HTTP_204_NO_CONTENT)
