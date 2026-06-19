@@ -17,7 +17,7 @@ class PaymentRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("users.id"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
     plan_id: Mapped[UUID] = mapped_column(

@@ -14,7 +14,7 @@ class EmailVerificationToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("users.id"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
