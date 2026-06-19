@@ -157,6 +157,35 @@ class SiteService:
             await self.session.rollback()
             raise
 
+    async def publish_site(
+        self,
+        *,
+        user_id: UUID,
+        site_id: UUID,
+    ) -> SiteResponse:
+        site = await self.site_repository.get_active_site_by_id_and_owner(
+            site_id=site_id,
+            owner_id=user_id,
+        )
+        if site is None:
+            raise AppException(
+                code=error_codes.SITE_NOT_FOUND,
+                message="Site was not found.",
+                status_code=404,
+            )
+
+        await self.plan_policy_service.require_can_publish_site(user_id)
+
+        try:
+            site = await self.site_repository.publish(site=site)
+            await self.session.commit()
+            await self.session.refresh(site)
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
+        return SiteResponse.model_validate(site)
+
     async def check_publish_availability(
         self,
         *,

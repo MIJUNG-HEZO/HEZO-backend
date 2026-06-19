@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0008_add_active_subscription_unique_index"
+revision: str = "0008_add_sub_unique_index"
 down_revision: str | None = "0007_create_social_accounts"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
