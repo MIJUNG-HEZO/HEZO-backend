@@ -34,10 +34,15 @@ bearer_scheme = HTTPBearer(auto_error=False)
 class CurrentUser:
     id: UUID
     email_verified_at: datetime | None
+    role: str = "user"
 
     @property
     def email_verified(self) -> bool:
         return self.email_verified_at is not None
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
 
 
 def raise_unauthorized() -> Never:
@@ -91,7 +96,7 @@ async def require_authenticated(
     if user is None or user.deleted_at is not None:
         raise_unauthorized()
 
-    return CurrentUser(id=user.id, email_verified_at=user.email_verified_at)
+    return CurrentUser(id=user.id, email_verified_at=user.email_verified_at, role=user.role)
 
 
 async def require_email_verified(
@@ -164,6 +169,18 @@ def get_user_service(session: Annotated[AsyncSession, Depends(get_db_session)]) 
     return UserService(session)
 
 
+async def require_admin(
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> CurrentUser:
+    if not current_user.is_admin:
+        raise AppException(
+            code=error_codes.FORBIDDEN_ADMIN,
+            message="Admin access required.",
+            status_code=403,
+        )
+    return current_user
+
+
 __all__ = [
     "CurrentUser",
     "get_auth_service",
@@ -176,6 +193,7 @@ __all__ = [
     "get_site_service",
     "get_subscription_service",
     "get_user_service",
+    "require_admin",
     "require_authenticated",
     "require_development_environment",
     "require_email_verified",
