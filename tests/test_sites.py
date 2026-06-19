@@ -167,6 +167,9 @@ class FakeSubscriptionRepository:
     async def get_active_by_user_id(self, _: UUID) -> FakeSubscription:
         return FakeSubscription(plan_id=self.plan_id)
 
+    async def get_active_by_user_id_for_update(self, _: UUID) -> FakeSubscription:
+        return FakeSubscription(plan_id=self.plan_id)
+
 
 class FakePlanRepository:
     def __init__(self, plan: FakePlan) -> None:
@@ -181,6 +184,9 @@ class FakeSiteRepository:
         self.used_sites = used_sites
 
     async def count_active_sites_by_owner(self, _: UUID) -> int:
+        return self.used_sites
+
+    async def count_published_sites_by_owner(self, _: UUID) -> int:
         return self.used_sites
 
 
@@ -840,17 +846,17 @@ def test_site_service_propagates_subscription_error_for_publish_availability() -
     asyncio.run(run_check_availability())
 
 
-def test_plan_policy_blocks_site_creation_when_limit_is_exceeded() -> None:
+def test_plan_policy_blocks_publish_when_limit_is_exceeded() -> None:
     async def run_policy_check() -> None:
         plan_id = uuid4()
         plan_policy_service = PlanPolicyService(
-            plan_repository=FakePlanRepository(plan=FakePlan(max_sites=1)),
+            plan_repository=FakePlanRepository(plan=FakePlan(max_sites=1, can_publish=True)),
             subscription_repository=FakeSubscriptionRepository(plan_id=plan_id),
             site_repository=FakeSiteRepository(used_sites=1),
         )
 
         with pytest.raises(AppException) as exc_info:
-            await plan_policy_service.require_can_create_site(uuid4())
+            await plan_policy_service.require_can_publish_site(uuid4())
 
         assert exc_info.value.code == error_codes.SITE_LIMIT_EXCEEDED
         assert exc_info.value.status_code == 403
