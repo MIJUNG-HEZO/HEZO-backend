@@ -3,6 +3,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
@@ -153,6 +154,114 @@ def _to_list(value: object, sep: str = ",") -> list[str]:
     if isinstance(value, str) and value.strip():
         return [s.strip() for s in value.split(sep) if s.strip()]
     return []
+
+
+_TEMPLATE_CATEGORY_MAP: dict[str, str] = {
+    "01-clinic-landing": "landing", "02-course-landing": "landing",
+    "03-saas-product": "landing",   "05-lifting-clinic": "landing",
+    "07-legal-consulting": "landing","13-tax-accounting": "landing",
+    "17-solar-energy": "landing",    "landing_general": "landing",
+    "01-food-travel-blog": "blog",  "03-developer-docs": "blog",
+    "05-expert-column": "blog",     "17-career-notebook": "blog",
+    "01-cafe-menu": "store",        "05-booking-service": "store",
+    "06-oops-nail": "store",        "10-wine-market": "store",
+}
+
+
+def _get_template_category(template_id: str) -> str:
+    if template_id in _TEMPLATE_CATEGORY_MAP:
+        return _TEMPLATE_CATEGORY_MAP[template_id]
+    if "blog" in template_id:
+        return "blog"
+    if any(k in template_id for k in ("store", "cafe", "menu", "nail", "wine")):
+        return "store"
+    return "landing"
+
+
+def _build_render_spec(contract: dict) -> dict:
+    """Contract JSON → P3가 소비하는 simplified render_spec (프리뷰용)."""
+    slots = contract.get("slots", {})
+    template = contract.get("template", {})
+    template_id = template.get("template_id") or "01-clinic-landing"
+    template_category = _get_template_category(template_id)
+
+    business_name = slots.get("business_name") or "My Business"
+    core_services = _to_list(slots.get("core_services") or [])
+    phone         = slots.get("phone") or ""
+    kakao_channel = slots.get("kakao_channel") or ""
+    business_hours = slots.get("business_hours") or "평일 09:00-18:00"
+
+    service_text = ", ".join(core_services[:2]) if core_services else "전문 서비스"
+    quick_answer = f"{business_name}은(는) {service_text}를 제공하는 전문 업체입니다."
+
+    jsonld: list[dict] = [{
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        "name": business_name,
+        "telephone": phone,
+        "openingHours": business_hours,
+    }]
+    if kakao_channel:
+        jsonld[0]["sameAs"] = [f"https://pf.kakao.com/{kakao_channel}"]
+
+    faq_items = []
+    if core_services:
+        faq_items = [
+            {"q": f"{business_name}은 어떤 서비스를 제공하나요?",
+             "a": f"{', '.join(core_services)}를 제공합니다."},
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
+        ]
+
+    return {
+        "schema_version": "1.0.0",
+        "template_id": template_id,
+        "template_category": template_category,
+        "pages": [{
+            "route": "/",
+            "title_h1": business_name,
+            "seo": {
+                "title": f"{business_name} | 공식 홈페이지",
+                "description": f"{business_name}의 {service_text} 서비스. 지금 바로 상담받으세요.",
+                "og": {
+                    "title": f"{business_name} | 공식 홈페이지",
+                    "description": f"{service_text} 전문 {business_name}",
+                    "type": "website",
+                },
+            },
+            "jsonld": jsonld,
+            "blocks": [
+                {"type": "Hero", "h1": business_name},
+                {"type": "Services", "items": [{"name": s, "desc": ""} for s in core_services[:4]]},
+                {"type": "QuickAnswer", "text": quick_answer},
+                {"type": "Contact", "phone": phone, "kakao": kakao_channel},
+                {"type": "FAQ", "items": faq_items},
+            ],
+        }],
+    }
+
+
+def _inline_preview_css(html: str, site_id: str, s3_client: object) -> str:
+    """./static/*.css 링크 태그를 S3에서 읽어 <style> 태그로 인라인 치환."""
+    def _replace(m: re.Match) -> str:
+        href = m.group(1)
+        css_name = href.rsplit("/", 1)[-1]
+        try:
+            obj = s3_client.get_object(  # type: ignore[union-attr]
+                Bucket=_ARTIFACTS_BUCKET,
+                Key=f"sites/{site_id}/preview/static/{css_name}",
+            )
+            css = obj["Body"].read().decode("utf-8")
+            return f"<style>{css}</style>"
+        except Exception:
+            return m.group(0)
+
+    return re.sub(
+        r'<link\b[^>]*\bhref=["\'](\./static/[^"\']+\.css)["\'][^>]*(?:/)?>',
+        _replace,
+        html,
+        flags=re.IGNORECASE,
+    )
 
 
 def _build_contract(site_id: str) -> dict:
@@ -448,20 +557,20 @@ async def create_contract(
 
 class _PreviewResponse(BaseModel):
     site_id: str
-    preview_mode: str  # "triggered" | "mock"
+    preview_mode: str  # "p3" | "mock"
+    preview_html: str | None = None
     preview_url: str | None = None
     message: str
 
 
-@router.post("/{site_id}/preview", response_model=_PreviewResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{site_id}/preview", response_model=_PreviewResponse, status_code=status.HTTP_200_OK)
 async def create_preview(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
 ) -> _PreviewResponse:
     """
-    P3 빌드 워커 preview 모드 트리거.
-    - P3_BUILD_ENDPOINT 설정됨: P3 HTTP 서비스에 비동기 트리거
-    - P3_BUILD_ENDPOINT 미설정: mock 202 반환 (로컬 개발용)
+    Contract JSON → render_spec S3 업로드 → P3 Worker 호출 → HTML 반환.
+    P3_BUILD_ENDPOINT 미설정 시 mock 응답.
     """
     sid = str(site_id)
     endpoint = settings.p3_build_endpoint
@@ -473,26 +582,60 @@ async def create_preview(
         )
 
     contract = _build_contract(sid)
+    render_spec = _build_render_spec(contract)
+
+    s3 = boto3.client("s3", region_name=_AWS_REGION)
+
+    # render_spec → S3 (P3 Worker가 읽음)
+    try:
+        s3.put_object(
+            Bucket=_ARTIFACTS_BUCKET,
+            Key=f"sites/{sid}/render_spec.json",
+            Body=json.dumps(render_spec, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except (BotoCoreError, ClientError) as e:
+        logger.error("render_spec S3 업로드 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="render_spec 저장에 실패했습니다.",
+        ) from e
+
+    # P3 Worker 호출 (동기 HTTP — P3는 내부적으로 S3 읽기/쓰기)
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{endpoint.rstrip('/')}/invocations",
-                json={"site_id": sid, "mode": "preview", "contract": contract},
+                json={
+                    "inputText": f"site_id={sid} mode=preview",
+                    "sessionAttributes": {"site_id": sid, "mode": "preview"},
+                },
             )
             resp.raise_for_status()
-            data = resp.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.error("P3 preview 트리거 실패 site=%s: %s", sid, e)
+        logger.error("P3 preview 호출 실패 site=%s: %s", sid, e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="프리뷰 생성 서비스에 연결할 수 없습니다.",
         ) from e
 
+    # P3가 업로드한 HTML을 S3에서 읽어 CSS 인라인 후 반환
+    try:
+        obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=f"sites/{sid}/preview/index.html")
+        raw_html = obj["Body"].read().decode("utf-8")
+        preview_html = _inline_preview_css(raw_html, sid, s3)
+    except (BotoCoreError, ClientError) as e:
+        logger.error("preview HTML S3 읽기 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="프리뷰 HTML 조회에 실패했습니다.",
+        ) from e
+
     return _PreviewResponse(
         site_id=sid,
-        preview_mode="triggered",
-        preview_url=data.get("preview_url"),
-        message="프리뷰 생성이 시작되었습니다.",
+        preview_mode="p3",
+        preview_html=preview_html,
+        message="프리뷰가 생성되었습니다.",
     )
 
 
