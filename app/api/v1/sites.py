@@ -147,37 +147,62 @@ class _StructurePayload(BaseModel):
     template_id: str = ""
 
 
+def _to_list(value: object, sep: str = ",") -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [s.strip() for s in value.split(sep) if s.strip()]
+    return []
+
+
 def _build_contract(site_id: str) -> dict:
     """
-    온보딩 데이터에서 G slot-based Contract JSON (schema_version: 0.1.0) 생성.
+    챗봇 수집 슬롯(7개) → Contract JSON (schema_version: 0.1.0).
     생성 에이전트(Bedrock)가 소비하는 확정 포맷.
     """
-    overrides = _site_onboarding.get(site_id, {})
+    o = _site_onboarding.get(site_id, {})
 
-    # ── 슬롯 값 추출 ──────────────────────────────────────────────────────────
-    business_name   = overrides.get("business_name", "")
-    services        = overrides.get("services", [])
-    contact         = overrides.get("contact", {})
-    phone           = contact.get("phone", "")
-    email           = contact.get("email", "")
-    address         = contact.get("address", "")
-    template_id     = overrides.get("template_id", "landing_general")
-    category        = overrides.get("structure", "landing")
+    business_name    = o.get("business_name", "")
+    business_region  = o.get("business_region", "한국")
+    core_services    = _to_list(o.get("core_services", []))
+    target_audience  = _to_list(o.get("target_audience", ["잠재 고객"]))
+    phone            = o.get("phone", "")
+    kakao_raw        = o.get("kakao_channel", "")
+    kakao_channel    = "" if kakao_raw in ("없음", "none", "") else kakao_raw
+    business_hours   = o.get("business_hours", "평일 09:00-18:00")
+    template_id      = o.get("template_id", "landing_general")
+    category         = o.get("structure", "landing")
 
-    # 템플릿 slug: "landing_tax" → "tax", "01-clinic-landing" → "clinic"
-    slug_raw        = template_id.replace("landing_", "").replace("-landing", "")
-    slug            = slug_raw.split("-")[0] if "-" in slug_raw else slug_raw
+    slug_raw  = template_id.replace("landing_", "").replace("-landing", "")
+    slug      = slug_raw.split("-")[0] if "-" in slug_raw else slug_raw
 
-    # 필수 슬롯 채움 여부 판단 — generation_ready 기준
-    filled          = bool(business_name and services and phone)
-    slot_score      = round(
-        (bool(business_name) * 0.3)
-        + (bool(services) * 0.3)
-        + (bool(phone) * 0.2)
-        + (bool(address) * 0.1)
-        + (bool(email) * 0.1),
+    contact_method = ["phone"] if phone else []
+    if kakao_channel:
+        contact_method.append("kakao")
+    contact_method.append("contact_form")
+
+    cta = (["무료 상담 신청", "카카오톡 상담"] if kakao_channel
+           else ["무료 상담 신청", "전화 상담"])
+
+    brand_keywords = ([business_name] + core_services[:2]) if business_name else ["전문 서비스"]
+
+    required = bool(business_name and core_services and phone)
+    slot_score = round(
+        bool(business_name) * 0.25
+        + bool(business_region) * 0.10
+        + bool(core_services) * 0.25
+        + bool(target_audience) * 0.15
+        + bool(phone) * 0.15
+        + bool(business_hours) * 0.10,
         2,
     )
+
+    def _slot_status(val: object) -> dict:
+        filled = bool(val)
+        return {"status": "filled" if filled else "missing",
+                "confidence": 1.0 if filled else 0,
+                "source": "user" if filled else None,
+                "ask_count": 1 if filled else 0}
 
     return {
         "schema_version": "0.1.0",
@@ -192,56 +217,52 @@ def _build_contract(site_id: str) -> dict:
             "slug": slug,
         },
         "slots": {
-            "business_name":    business_name,
-            "industry":         "general",
-            "business_type":    category,
-            "business_region":  address or "한국",
-            "site_goal":        "lead_capture",
-            "target_audience":  ["잠재 고객"],
-            "core_services":    services,
-            "pain_points":      [],
-            "required_sections":["hero", "services", "faq", "contact_form", "footer"],
-            "tone_style":       ["professional", "trustworthy"],
-            "brand_keywords":   [business_name] if business_name else ["전문 서비스"],
-            "cta":              ["지금 상담 신청", "카카오톡 상담"],
-            "contact_method":   (
-                ["phone", "email", "contact_form"]
-                if email
-                else ["phone", "contact_form"]
-            ),
-            "phone":            phone,
-            "kakao_channel":    "",
-            "business_hours":   "평일 09:00-18:00",
-            "business_number":  None,
+            "business_name":         business_name,
+            "industry":              o.get("industry", "general"),
+            "business_type":         category,
+            "business_region":       business_region,
+            "site_goal":             "lead_capture",
+            "target_audience":       target_audience,
+            "core_services":         core_services,
+            "pain_points":           [],
+            "required_sections":     ["hero", "services", "faq", "contact_form", "footer"],
+            "tone_style":            ["professional", "trustworthy"],
+            "brand_keywords":        brand_keywords,
+            "cta":                   cta,
+            "contact_method":        contact_method,
+            "phone":                 phone,
+            "kakao_channel":         kakao_channel,
+            "business_hours":        business_hours,
+            "business_number":       None,
             "reference_site_exists": False,
-            "reference_sites":  [],
+            "reference_sites":       [],
         },
         "slot_status": {
-            "business_name":    {"status": "filled" if business_name else "missing", "confidence": 1.0 if business_name else 0, "source": "user", "ask_count": 1},
-            "core_services":    {"status": "filled" if services else "missing",      "confidence": 0.9 if services else 0,       "source": "user", "ask_count": 1},
-            "phone":            {"status": "filled" if phone else "missing",          "confidence": 1.0 if phone else 0,          "source": "user", "ask_count": 1},
-            "business_number":  {"status": "missing", "confidence": 0, "source": None, "ask_count": 0},
+            "business_name":   _slot_status(business_name),
+            "business_region": _slot_status(business_region),
+            "core_services":   _slot_status(core_services),
+            "target_audience": _slot_status(target_audience),
+            "phone":           _slot_status(phone),
+            "kakao_channel":   {"status": "filled" if kakao_channel else "skipped",
+                                "confidence": 1.0 if kakao_channel else 0,
+                                "source": "user", "ask_count": 1},
+            "business_hours":  _slot_status(business_hours),
+            "business_number": {"status": "missing", "confidence": 0, "source": None, "ask_count": 0},
         },
-        "evidence": {
-            "wiki_refs":      [],
-            "research_refs":  [],
-        },
+        "evidence": {"wiki_refs": [], "research_refs": []},
         "gates": {
             "completeness_score": slot_score,
             "preview_ready":      True,
-            "generation_ready":   filled,
-            "missing_items": (
-                []
-                if filled
-                else [
-                    {"slot_key": k, "reason": f"{k} 필드가 누락되었습니다."}
-                    for k in (
-                        (["business_name"] if not business_name else [])
-                        + (["core_services"] if not services else [])
-                        + (["phone"] if not phone else [])
-                    )
+            "generation_ready":   required,
+            "missing_items": [
+                {"slot_key": k, "reason": f"{k} 필드가 누락되었습니다."}
+                for k, v in [
+                    ("business_name", business_name),
+                    ("core_services", core_services),
+                    ("phone", phone),
                 ]
-            ),
+                if not v
+            ],
             "unresolved_items": [],
         },
     }
@@ -390,6 +411,19 @@ async def update_onboarding_additional(
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
 ) -> None:
     return None
+
+
+@router.patch("/{site_id}/onboarding/slots", status_code=status.HTTP_204_NO_CONTENT)
+async def save_chat_slots(
+    site_id: UUID,
+    payload: dict,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> None:
+    """챗봇 수집 슬롯 7개를 한 번에 저장."""
+    sid = str(site_id)
+    if sid not in _site_onboarding:
+        _site_onboarding[sid] = {}
+    _site_onboarding[sid].update(payload)
 
 
 @router.post("/{site_id}/onboarding/complete", status_code=status.HTTP_204_NO_CONTENT)
