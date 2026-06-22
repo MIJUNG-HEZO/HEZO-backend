@@ -7,6 +7,7 @@ class ChatRequest(BaseModel):
     session_id: str
     user_message: str
     answered_slot: str = ""    # 직전 에이전트가 질문한 슬롯 키
+    known_answers: dict = {}   # 누적된 슬롯 값 (프론트가 턴마다 전달)
     domain: str = ""
     domain_label: str = ""
     category: str = "landing"
