@@ -1,0 +1,12 @@
+.venv
+.pytest_cache
+.git
+.github
+tests/
+.env
+.env.*
+*.md
+__pycache__
+*.pyc
+*.pyo
+hezo_backend.egg-info

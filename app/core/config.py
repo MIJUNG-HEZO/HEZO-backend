@@ -73,6 +73,8 @@ class Settings(BaseSettings):
         default="http://localhost:3000/billing/fail",
         alias="TOSS_PAYMENTS_FAIL_URL",
     )
+    p1_agent_endpoint: str | None = Field(default=None, alias="P1_AGENT_ENDPOINT")
+    p3_build_endpoint: str | None = Field(default=None, alias="P3_BUILD_ENDPOINT")
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

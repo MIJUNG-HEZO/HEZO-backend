@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hezo_app
+      POSTGRES_PASSWORD: hezo_password
+      POSTGRES_DB: hezo_dev
+    ports:
+      - "5400:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

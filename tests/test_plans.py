@@ -101,6 +101,10 @@ class FakePolicySubscriptionRepository:
         self.user_id = user_id
         return self.subscription
 
+    async def get_active_by_user_id_for_update(self, user_id: UUID) -> SimpleNamespace | None:
+        self.user_id = user_id
+        return self.subscription
+
 
 class FakePolicyPlanRepository:
     def __init__(self, plan: SimpleNamespace | None) -> None:
@@ -118,6 +122,10 @@ class FakePolicySiteRepository:
         self.owner_id: UUID | None = None
 
     async def count_active_sites_by_owner(self, owner_id: UUID) -> int:
+        self.owner_id = owner_id
+        return self.used_sites
+
+    async def count_published_sites_by_owner(self, owner_id: UUID) -> int:
         self.owner_id = owner_id
         return self.used_sites
 
@@ -246,7 +254,7 @@ def test_plan_policy_service_usage_never_returns_negative_remaining_sites() -> N
 
         assert response.usage.used_sites == 3
         assert response.usage.remaining_sites == 0
-        assert response.usage.can_create_site is False
+        assert response.usage.can_create_site is True  # draft 생성은 항상 허용
         assert response.usage.can_publish is False
 
     asyncio.run(run_get_usage())
@@ -304,7 +312,6 @@ def test_plan_policy_allows_site_creation_when_usage_is_below_limit() -> None:
 
         assert plan_policy_service.subscription_repository.user_id == user_id
         assert plan_policy_service.plan_repository.plan_id == plan_id
-        assert plan_policy_service.site_repository.owner_id == user_id
 
     asyncio.run(run_policy_check())
 
@@ -345,10 +352,12 @@ def test_plan_policy_rejects_site_creation_when_plan_is_missing() -> None:
     asyncio.run(run_policy_check())
 
 
-def test_plan_policy_rejects_site_creation_when_limit_is_reached() -> None:
+def test_plan_policy_rejects_publish_when_limit_is_reached() -> None:
     async def run_policy_check() -> None:
         plan_policy_service = PlanPolicyService(
-            plan_repository=FakePolicyPlanRepository(plan=SimpleNamespace(max_sites=1)),
+            plan_repository=FakePolicyPlanRepository(
+                plan=SimpleNamespace(max_sites=1, can_publish=True)
+            ),
             subscription_repository=FakePolicySubscriptionRepository(
                 subscription=SimpleNamespace(plan_id=uuid4())
             ),
@@ -356,11 +365,10 @@ def test_plan_policy_rejects_site_creation_when_limit_is_reached() -> None:
         )
 
         with pytest.raises(AppException) as exc_info:
-            await plan_policy_service.require_can_create_site(uuid4())
+            await plan_policy_service.require_can_publish_site(uuid4())
 
         assert exc_info.value.code == error_codes.SITE_LIMIT_EXCEEDED
         assert exc_info.value.status_code == 403
-        assert exc_info.value.details == {"max_sites": 1, "used_sites": 1}
 
     asyncio.run(run_policy_check())
 
