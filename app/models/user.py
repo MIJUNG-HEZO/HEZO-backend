@@ -18,6 +18,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    role: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="user",
+        server_default="user",
+    )
 
     __table_args__ = (
         Index("idx_users_deleted_at", "deleted_at"),
