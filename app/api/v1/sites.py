@@ -1,3 +1,5 @@
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -614,6 +616,16 @@ _P1_MOCK_MESSAGES = [
 _p1_mock_index: dict[str, int] = {}
 
 
+_p1_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_p1_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _p1_executor
+    if _p1_executor is None:
+        _p1_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="p1-agentcore")
+    return _p1_executor
+
+
 @router.post("/{site_id}/chat", response_model=ChatResponse)
 async def chat_with_p1(
     site_id: UUID,
@@ -622,14 +634,14 @@ async def chat_with_p1(
 ) -> ChatResponse:
     """
     P1 챗봇 에이전트 프록시.
-    - P1_AGENT_ENDPOINT 설정됨: AgentCore /invocations로 포워딩
-    - P1_AGENT_ENDPOINT 미설정: 순차 mock 응답 (로컬 개발용)
+    - P1_AGENTCORE_RUNTIME_ARN 설정: boto3 bedrock-agentcore 호출
+    - 미설정: 순차 mock 응답 (로컬 개발용)
     """
     sid = str(site_id)
     session_key = f"{sid}:{payload.session_id}"
-    endpoint = settings.p1_agent_endpoint
+    runtime_arn = settings.p1_agentcore_runtime_arn
 
-    if not endpoint:
+    if not runtime_arn:
         idx = _p1_mock_index.get(session_key, 0)
         msg = _P1_MOCK_MESSAGES[min(idx, len(_P1_MOCK_MESSAGES) - 1)]
         _p1_mock_index[session_key] = idx + 1
@@ -639,45 +651,58 @@ async def chat_with_p1(
             assistant_message=msg,
             turn_status="ready_for_contract_compile" if turn_done else "answer_accepted",
             next_stage="contract_compile" if turn_done else "proactive_questioning",
+            current_slot="",
             mock=True,
         )
 
     agentcore_payload = {
-        "action": "chat_turn",
-        "session_id": payload.session_id,
-        "site_id": sid,
-        "user_id": str(current_user.id),
-        "user_message": payload.user_message,
-        "domain": payload.domain,
-        "template_id": payload.template_id,
+        "sessionId": payload.session_id,
+        "inputText": payload.user_message,
+        "sessionAttributes": {
+            "action": "chat_turn",
+            "site_id": sid,
+            "user_id": str(current_user.id),
+            "answer": payload.user_message,
+            "answered_slot": payload.answered_slot or "business_name",
+            "domain": payload.domain or "general",
+            "domain_label": payload.domain_label or "",
+            "category": payload.category or "landing",
+            "selected_template": payload.template_id or "",
+            "storage_mode": "aws",
+        },
     }
+
+    def _invoke() -> dict:
+        client = boto3.client("bedrock-agentcore", region_name="ap-northeast-2")
+        resp = client.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            payload=json.dumps(agentcore_payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+        return json.loads(resp["output"].read())
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{endpoint.rstrip('/')}/invocations",
-                json=agentcore_payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as e:
+        loop = asyncio.get_event_loop()
+        data: dict = await loop.run_in_executor(_get_p1_executor(), _invoke)
+    except (BotoCoreError, ClientError) as e:
         logger.error("P1 AgentCore 오류 site=%s: %s", sid, e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
         ) from e
-    except httpx.RequestError as e:
-        logger.error("P1 AgentCore 연결 실패 site=%s: %s", sid, e)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="챗봇 서비스에 연결할 수 없습니다.",
-        ) from e
+
+    meta: dict = data.get("metadata", {})
+    candidates: list = meta.get("question_candidates") or []
+    current_slot = candidates[0].get("slot", "") if candidates else ""
 
     return ChatResponse(
         session_id=payload.session_id,
-        assistant_message=data.get("assistant_message", ""),
-        turn_status=data.get("turn_status", "answer_accepted"),
-        next_stage=data.get("next_stage", "proactive_questioning"),
-        slot_filled=data.get("slot_filled", {}),
-        missing_slots=data.get("missing_slots", []),
+        assistant_message=data.get("output", ""),
+        turn_status=meta.get("turn_status", "answer_accepted"),
+        next_stage=meta.get("next_stage", "proactive_questioning"),
+        slot_filled=meta.get("known_answers", {}),
+        missing_slots=meta.get("missing_slots", []),
+        current_slot=current_slot,
         mock=False,
     )
