@@ -680,7 +680,13 @@ async def chat_with_p1(
             contentType="application/json",
             accept="application/json",
         )
-        return json.loads(resp["output"].read())
+        body_key = "body" if "body" in resp else next(
+            (k for k in resp if hasattr(resp[k], "read")), None
+        )
+        if body_key is None:
+            logger.error("P1 AgentCore 응답 키 목록: %s", list(resp.keys()))
+            raise ValueError(f"AgentCore 응답에서 body를 찾을 수 없음: {list(resp.keys())}")
+        return json.loads(resp[body_key].read())
 
     try:
         loop = asyncio.get_event_loop()
