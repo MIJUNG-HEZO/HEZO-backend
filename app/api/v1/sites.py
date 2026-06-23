@@ -50,16 +50,40 @@ def _get_s3_client():
     return boto3.client("s3", region_name=_AWS_REGION)
 
 
-def _start_pipeline(site_id: str, contract_json: dict) -> dict:
+def _extract_template_info(contract: dict) -> tuple[str, str]:
     """
-    Step Functions 파이프라인 실행 시작.
-    returns: { execution_arn, status }
-    raises: RuntimeError (AWS 호출 실패 시)
+    contract JSON에서 (template_type, template_category) 추출.
+    schema 1.0.0: template.template_id="13-tax-accounting", template.template_category="landing"
+    schema 0.1.0: template.slug="general", template.category="landing"
+    """
+    t = contract.get("template", {})
+    if contract.get("schema_version") == "1.0.0":
+        category = t.get("template_category", "landing")
+        template_id = t.get("template_id", "")
+        # "13-tax-accounting" → "tax-accounting", "10-wine-market" → "wine-market"
+        parts = template_id.split("-", 1)
+        ttype = parts[1] if len(parts) == 2 and parts[0].isdigit() else template_id
+    else:
+        category = t.get("category", "landing")
+        ttype = t.get("slug", "general")
+    return ttype, category
+
+
+def _start_pipeline(site_id: str, template_type: str, template_category: str) -> dict:
+    """
+    Step Functions hezo-site-pipeline 실행.
+    SM 입력: { site_id, template_type, template_category }
+    PublishSiteEvent 스텝이 $.template_type, $.template_category 를 EventBridge 이벤트에 포함.
+    returns: { execution_arn, status, started_at }
     """
     sfn = _get_sfn_client()
     execution_name = f"site-{site_id[:8]}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     input_payload = json.dumps(
-        {"site_id": site_id, "contract_json": contract_json},
+        {
+            "site_id": site_id,
+            "template_type": template_type,
+            "template_category": template_category,
+        },
         ensure_ascii=False,
     )
     resp = sfn.start_execution(
@@ -90,7 +114,8 @@ def _get_pipeline_status(site_id: str) -> dict:
         if item:
             return {
                 "site_id": site_id,
-                "pipeline_status": item.get("pipeline_status", {}).get("S", "unknown"),
+                "pipeline_status": item.get("publish_status", {}).get("S", "unknown"),
+                "domain_url": item.get("domain_url", {}).get("S"),
                 "render_spec_s3_key": item.get("render_spec_s3_key", {}).get("S"),
                 "updated_at": item.get("updated_at", {}).get("S"),
                 "error": item.get("error_message", {}).get("S"),
@@ -103,21 +128,36 @@ def _get_pipeline_status(site_id: str) -> dict:
         sfn = _get_sfn_client()
         resp = sfn.list_executions(
             stateMachineArn=_STEP_FUNCTIONS_ARN,
-            statusFilter="RUNNING",
-            maxResults=10,
+            maxResults=5,
         )
-        for ex in resp.get("executions", []):
-            if site_id in ex.get("name", ""):
-                return {
-                    "site_id": site_id,
-                    "pipeline_status": "running",
-                    "execution_arn": ex["executionArn"],
-                    "updated_at": ex["startDate"].isoformat(),
-                }
+        executions = resp.get("executions", [])
+        site_exec = next(
+            (e for e in executions if site_id in e.get("name", "")),
+            None,
+        )
+        if site_exec:
+            sfn_status = site_exec["status"]
+            status_map = {
+                "RUNNING": "building",
+                "SUCCEEDED": "published",
+                "FAILED": "failed",
+                "TIMED_OUT": "failed",
+                "ABORTED": "failed",
+            }
+            stop_date = site_exec.get("stopDate")
+            start_date = site_exec.get("startDate")
+            updated = (stop_date or start_date)
+            return {
+                "site_id": site_id,
+                "pipeline_status": status_map.get(sfn_status, "unknown"),
+                "domain_url": None,
+                "execution_arn": site_exec.get("executionArn"),
+                "updated_at": updated.isoformat() if updated and hasattr(updated, "isoformat") else None,
+            }
     except (BotoCoreError, ClientError) as e:
         logger.warning("Step Functions 조회 실패: %s", e)
 
-    return {"site_id": site_id, "pipeline_status": "unknown"}
+    return {"site_id": site_id, "pipeline_status": "unknown", "domain_url": None}
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
 
@@ -816,7 +856,8 @@ async def retry_preview_content(
 
 class _PipelineStatusResponse(BaseModel):
     site_id: str
-    pipeline_status: str          # "running" | "generation_complete" | "generation_failed" | "published" | "unknown"
+    pipeline_status: str          # "building"|"validating"|"provisioning"|"published"|"failed"|"unknown"
+    domain_url: str | None = None
     render_spec_s3_key: str | None = None
     execution_arn: str | None = None
     updated_at: str | None = None
@@ -854,29 +895,45 @@ async def publish_site(
 
     if _AWS_ENABLED:
         # ── AWS 파이프라인 모드 ──────────────────────────────────────────────
-        contract_json = _build_contract(sid)
+        s3 = _get_s3_client()
+        contract_s3_key = f"sites/{sid}/contract_final.json"
 
-        # S3에 contract_final.json 먼저 업로드 (Step Functions가 읽을 수 있도록)
+        # 1) P1 chatbot이 저장한 S3 contract_final.json 우선 사용 (schema 1.0.0)
+        contract_json: dict | None = None
         try:
-            s3 = _get_s3_client()
-            s3.put_object(
-                Bucket=_ARTIFACTS_BUCKET,
-                Key=f"sites/{sid}/contract_final.json",
-                Body=json.dumps(contract_json, ensure_ascii=False).encode("utf-8"),
-                ContentType="application/json",
-            )
-        except (BotoCoreError, ClientError) as e:
-            logger.error("S3 contract 업로드 실패 site=%s: %s", sid, e)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="S3 업로드에 실패했습니다. AWS 자격증명을 확인하세요.",
-            ) from e
+            obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=contract_s3_key)
+            contract_json = json.loads(obj["Body"].read().decode("utf-8"))
+            logger.info("publish: S3 contract_final.json 사용 site=%s schema=%s",
+                        sid, contract_json.get("schema_version"))
+        except (BotoCoreError, ClientError):
+            pass
 
-        # Step Functions 실행 시작
+        # 2) S3에 없으면 인메모리 mock으로 폴백 후 S3에 업로드
+        if contract_json is None:
+            contract_json = _build_contract(sid)
+            logger.warning("publish: S3 contract 없음, mock 사용 site=%s", sid)
+            try:
+                s3.put_object(
+                    Bucket=_ARTIFACTS_BUCKET,
+                    Key=contract_s3_key,
+                    Body=json.dumps(contract_json, ensure_ascii=False).encode("utf-8"),
+                    ContentType="application/json",
+                )
+            except (BotoCoreError, ClientError) as e:
+                logger.error("publish: S3 contract 업로드 실패 site=%s: %s", sid, e)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="S3 업로드에 실패했습니다.",
+                ) from e
+
+        # 3) template_type, template_category 추출
+        template_type, template_category = _extract_template_info(contract_json)
+
+        # 4) Step Functions 실행
         try:
-            pipeline_info = _start_pipeline(sid, contract_json)
+            pipeline_info = _start_pipeline(sid, template_type, template_category)
         except (BotoCoreError, ClientError) as e:
-            logger.error("Step Functions 실행 실패 site=%s: %s", sid, e)
+            logger.error("publish: Step Functions 실행 실패 site=%s: %s", sid, e)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="파이프라인 실행에 실패했습니다.",
