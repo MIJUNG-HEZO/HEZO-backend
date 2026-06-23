@@ -864,7 +864,7 @@ async def chat_with_p1(
     }
 
     def _invoke() -> dict:
-        client = boto3.client("bedrock-agentcore", region_name="ap-northeast-2")
+        client = boto3.client("bedrock-agentcore", region_name=_AWS_REGION)
         resp = client.invoke_agent_runtime(
             agentRuntimeArn=runtime_arn,
             payload=json.dumps(agentcore_payload),
@@ -880,9 +880,8 @@ async def chat_with_p1(
         return json.loads(resp[body_key].read())
 
     try:
-        loop = asyncio.get_event_loop()
-        data: dict = await loop.run_in_executor(_get_p1_executor(), _invoke)
-    except (BotoCoreError, ClientError) as e:
+        data: dict = await asyncio.get_running_loop().run_in_executor(_get_p1_executor(), _invoke)
+    except (BotoCoreError, ClientError, ValueError) as e:
         logger.error("P1 AgentCore 오류 site=%s: %s", sid, e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
