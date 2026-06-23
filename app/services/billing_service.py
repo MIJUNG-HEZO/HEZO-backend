@@ -162,17 +162,19 @@ class BillingService:
                 order_id=payload.order_id,
                 amount=payload.amount,
             )
-        except httpx.HTTPStatusError as e:
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            status_code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else 0
+            error_body = e.response.text if isinstance(e, httpx.HTTPStatusError) else str(e)
             await self.payment_request_repository.update_status(
                 payment_request,
                 status=PaymentRequestStatus.PENDING,
-                pg_response_json={"error": e.response.text, "status_code": e.response.status_code},
+                pg_response_json={"error": error_body, "status_code": status_code},
             )
             await self.billing_event_repository.create(
                 user_id=user_id,
                 payment_request_id=payment_request.id,
                 event_type="payment_failed",
-                payload_json={"error": e.response.text},
+                payload_json={"error": error_body},
             )
             await self.session.commit()
             raise AppException(

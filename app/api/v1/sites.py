@@ -494,6 +494,7 @@ class _PipelineStatusResponse(BaseModel):
     execution_arn: str | None = None
     updated_at: str | None = None
     error: str | None = None
+    message: str | None = None
 
 
 class _PublishResponse(BaseModel):
