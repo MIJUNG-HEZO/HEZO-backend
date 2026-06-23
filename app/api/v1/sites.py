@@ -194,15 +194,22 @@ def _build_render_spec(contract: dict) -> dict:
     if "wine" in template_id:
         main_field = _to_list(slots.get("wine_lineup") or [])
         field_label = "와인"
+        # wine-market: H1은 첫 와인 이름 (또는 featured_wine)
+        h1_text = slots.get("featured_wine") or (main_field[0] if main_field else business_name)
     elif "tax" in template_id:
         main_field = _to_list(slots.get("tax_services") or [])
         field_label = "서비스"
+        # tax-accounting: H1은 세무 전문성 표현 (업체명 제외)
+        h1_text = f"{slots.get('business_region', '전문')} 세무회계 서비스"
     elif "career" in template_id:
         main_field = [slots.get("author_info", "")]
         field_label = "경력"
+        # career-notebook: H1은 경력 정보
+        h1_text = main_field[0] if main_field and main_field[0] else business_name
     else:
         main_field = _to_list(slots.get("core_services") or [])
         field_label = "서비스"
+        h1_text = business_name
 
     service_text = ", ".join(main_field[:2]) if main_field else "전문 서비스"
     quick_answer = f"{business_name}은(는) {service_text}를 제공하는 전문 업체입니다."
@@ -232,7 +239,7 @@ def _build_render_spec(contract: dict) -> dict:
         "template_category": template_category,
         "pages": [{
             "route": "/",
-            "title_h1": business_name,
+            "title_h1": h1_text,
             "seo": {
                 "title": f"{business_name} | 공식 홈페이지",
                 "description": f"{business_name}의 {service_text} 서비스. 지금 바로 상담받으세요.",
@@ -244,7 +251,7 @@ def _build_render_spec(contract: dict) -> dict:
             },
             "jsonld": jsonld,
             "blocks": [
-                {"type": "Hero", "h1": business_name},
+                {"type": "Hero", "h1": h1_text},
                 {"type": "Services", "items": [{"name": s, "desc": ""} for s in main_field[:4]]},
                 {"type": "QuickAnswer", "text": quick_answer},
                 {"type": "Contact", "phone": phone, "kakao": kakao_channel},
