@@ -156,6 +156,19 @@ def _to_list(value: object, sep: str = ",") -> list[str]:
     return []
 
 
+def _parse_service_items(raw: str) -> list[dict]:
+    """서비스 목록 파싱. "서비스명/설명, 서비스명2/설명2" 형식 지원.
+    슬래시 없으면 name만 채우고 desc는 빈 문자열."""
+    result = []
+    for item in _to_list(raw):
+        if "/" in item:
+            name, desc = item.split("/", 1)
+            result.append({"name": name.strip(), "desc": desc.strip()})
+        else:
+            result.append({"name": item, "desc": ""})
+    return result
+
+
 def _parse_wine_lineup(wine_lineup: str) -> list[dict]:
     """
     wine_lineup 문자열 파싱. 가격에 쉼표 포함(55,000원) 처리.
@@ -261,10 +274,11 @@ def _build_render_spec(contract: dict) -> dict:
 
     elif "tax" in template_id:
         field_label = "서비스"
-        main_field = _to_list(slots.get("tax_services") or [])
+        parsed_tax = _parse_service_items(slots.get("tax_services") or "")
         h1_text = f"{slots.get('business_region', '전문')} 세무회계 서비스"
-        service_text = ", ".join(main_field[:2]) if main_field else "세무회계 서비스"
-        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        service_names = [s["name"] for s in parsed_tax]
+        service_text = ", ".join(service_names[:2]) if service_names else "세무회계 서비스"
+        service_items = parsed_tax[:3]
         faq_items = [
             {"q": f"{business_name}의 서비스가 무엇인가요?",
              "a": f"{service_text}를 제공합니다."},
@@ -275,10 +289,14 @@ def _build_render_spec(contract: dict) -> dict:
     elif "career" in template_id:
         field_label = "경력"
         author_info = slots.get("author_info", "")
-        main_field = [author_info] if author_info else []
+        portfolio = _parse_service_items(slots.get("portfolio_projects") or "")
+        learning = _parse_service_items(slots.get("learning_activities") or "")
         h1_text = author_info if author_info else business_name
         service_text = author_info or "포트폴리오"
-        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        # note-card 3개: 포트폴리오 2개 + 학습 1개
+        service_items = (portfolio[:2] + learning[:1])[:3]
+        if not service_items and author_info:
+            service_items = [{"name": author_info, "desc": ""}]
         faq_items = [
             {"q": "어떤 경력을 가지고 계신가요?", "a": service_text},
             {"q": "연락 방법이 어떻게 되나요?", "a": "전화 또는 이메일로 문의해 주세요."},
