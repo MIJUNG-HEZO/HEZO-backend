@@ -156,6 +156,48 @@ def _to_list(value: object, sep: str = ",") -> list[str]:
     return []
 
 
+def _parse_wine_lineup(wine_lineup: str) -> list[dict]:
+    """
+    wine_lineup 문자열 파싱. 가격에 쉼표 포함(55,000원) 처리.
+    형식: "와인명/종류/가격/설명, 와인명2/..."
+    반환: [{"name": .., "type": .., "price": .., "desc": ..}, ...]
+    """
+    if not wine_lineup or not wine_lineup.strip():
+        return []
+
+    # 쉼표 분리 후, 숫자로 시작하는 부분은 앞 항목 가격의 연속으로 병합
+    # "이탈리아 키안티/레드/55" + ",000원/스테이크 페어링" → 합침
+    raw_parts = wine_lineup.split(",")
+    merged: list[str] = []
+    current = ""
+    for part in raw_parts:
+        stripped = part.lstrip()
+        if current and stripped and stripped[0].isdigit():
+            current = current + "," + part
+        else:
+            if current.strip():
+                merged.append(current.strip())
+            current = part
+    if current.strip():
+        merged.append(current.strip())
+
+    wines: list[dict] = []
+    for entry in merged:
+        parts = [p.strip() for p in entry.split("/")]
+        if len(parts) >= 4:
+            wines.append({
+                "name": parts[0],
+                "type": parts[1],
+                "price": parts[2],
+                "desc": "/".join(parts[3:]),
+            })
+        elif len(parts) == 3:
+            wines.append({"name": parts[0], "type": parts[1], "price": parts[2], "desc": ""})
+        elif parts and parts[0]:
+            wines.append({"name": parts[0], "type": "", "price": "", "desc": ""})
+    return wines
+
+
 _TEMPLATE_CATEGORY_MAP: dict[str, str] = {
     "01-clinic-landing": "landing", "02-course-landing": "landing",
     "03-saas-product": "landing",   "05-lifting-clinic": "landing",
@@ -191,37 +233,69 @@ def _build_render_spec(contract: dict) -> dict:
     business_hours = slots.get("business_hours") or "평일 09:00-18:00"
 
     # Template-specific 필드 추출
+    service_items: list[dict] = []  # Services block용 items
+    field_label = "서비스"
+
     if "wine" in template_id:
-        main_field = _to_list(slots.get("wine_lineup") or [])
         field_label = "와인"
-        # wine-market: H1은 첫 와인 이름만 (슬래시 앞부분)
-        if slots.get("wine_items"):
-            try:
-                import json
-                wine_items = json.loads(slots["wine_items"]) if isinstance(slots["wine_items"], str) else slots["wine_items"]
-                h1_text = wine_items[0].get("name", business_name) if wine_items else business_name
-            except (json.JSONDecodeError, TypeError, KeyError):
-                # wine_items 파싱 실패 → wine_lineup의 첫 번째 이름만 추출
-                h1_text = (main_field[0].split("/")[0] if main_field else business_name)
-        else:
-            # wine_items 없음 → wine_lineup의 첫 번째 이름만 추출
-            h1_text = (main_field[0].split("/")[0] if main_field else business_name)
+        parsed_wines = _parse_wine_lineup(slots.get("wine_lineup") or "")
+        h1_text = parsed_wines[0]["name"] if parsed_wines else business_name
+        service_items = [
+            {
+                "name": w["name"],
+                "desc": f"{w['type']} | {w['desc']}" if w.get("desc") else w.get("type", ""),
+                "price": w["price"],
+            }
+            for w in parsed_wines[:4]
+        ]
+        main_names = [w["name"] for w in parsed_wines[:3]]
+        service_text = ", ".join(main_names) if main_names else "프리미엄 와인"
+        faq_items = [
+            {
+                "q": f"{business_name}에서 판매하는 와인은 무엇인가요?",
+                "a": f"{service_text} 등 엄선된 와인을 취급합니다.",
+            },
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "구매 문의는 어떻게 하나요?", "a": "전화 또는 방문으로 문의해 주세요."},
+        ]
+
     elif "tax" in template_id:
-        main_field = _to_list(slots.get("tax_services") or [])
         field_label = "서비스"
-        # tax-accounting: H1은 세무 전문성 표현 (업체명 제외)
+        main_field = _to_list(slots.get("tax_services") or [])
         h1_text = f"{slots.get('business_region', '전문')} 세무회계 서비스"
+        service_text = ", ".join(main_field[:2]) if main_field else "세무회계 서비스"
+        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        faq_items = [
+            {"q": f"{business_name}의 서비스가 무엇인가요?",
+             "a": f"{service_text}를 제공합니다."},
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
+        ]
+
     elif "career" in template_id:
-        main_field = [slots.get("author_info", "")]
         field_label = "경력"
-        # career-notebook: H1은 경력 정보
-        h1_text = main_field[0] if main_field and main_field[0] else business_name
+        author_info = slots.get("author_info", "")
+        main_field = [author_info] if author_info else []
+        h1_text = author_info if author_info else business_name
+        service_text = author_info or "포트폴리오"
+        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        faq_items = [
+            {"q": "어떤 경력을 가지고 계신가요?", "a": service_text},
+            {"q": "연락 방법이 어떻게 되나요?", "a": "전화 또는 이메일로 문의해 주세요."},
+        ]
+
     else:
         main_field = _to_list(slots.get("core_services") or [])
-        field_label = "서비스"
         h1_text = business_name
+        service_text = ", ".join(main_field[:2]) if main_field else "전문 서비스"
+        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        faq_items = [
+            {"q": f"{business_name}의 {field_label}이 무엇인가요?",
+             "a": f"{service_text}를 제공합니다."},
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
+        ]
 
-    service_text = ", ".join(main_field[:2]) if main_field else "전문 서비스"
     quick_answer = f"{business_name}은(는) {service_text}를 제공하는 전문 업체입니다."
 
     jsonld: list[dict] = [{
@@ -233,15 +307,6 @@ def _build_render_spec(contract: dict) -> dict:
     }]
     if kakao_channel:
         jsonld[0]["sameAs"] = [f"https://pf.kakao.com/{kakao_channel}"]
-
-    faq_items = []
-    if main_field:
-        faq_items = [
-            {"q": f"{business_name}의 {field_label}이 무엇인가요?",
-             "a": f"{', '.join(main_field[:3])}를 제공합니다."},
-            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
-            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
-        ]
 
     return {
         "schema_version": "1.0.0",
@@ -262,7 +327,7 @@ def _build_render_spec(contract: dict) -> dict:
             "jsonld": jsonld,
             "blocks": [
                 {"type": "Hero", "h1": h1_text},
-                {"type": "Services", "items": [{"name": s, "desc": ""} for s in main_field[:4]]},
+                {"type": "Services", "items": service_items},
                 {"type": "QuickAnswer", "text": quick_answer},
                 {"type": "Contact", "phone": phone, "kakao": kakao_channel},
                 {"type": "FAQ", "items": faq_items},
