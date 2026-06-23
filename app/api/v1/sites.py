@@ -179,19 +179,32 @@ def _get_template_category(template_id: str) -> str:
 
 
 def _build_render_spec(contract: dict) -> dict:
-    """Contract JSON → P3가 소비하는 simplified render_spec (프리뷰용)."""
+    """Contract JSON → P3가 소비하는 simplified render_spec (프리뷰용, template-specific)."""
     slots = contract.get("slots", {})
     template = contract.get("template", {})
     template_id = template.get("template_id") or "01-clinic-landing"
     template_category = _get_template_category(template_id)
 
     business_name = slots.get("business_name") or "My Business"
-    core_services = _to_list(slots.get("core_services") or [])
     phone         = slots.get("phone") or ""
     kakao_channel = slots.get("kakao_channel") or ""
     business_hours = slots.get("business_hours") or "평일 09:00-18:00"
 
-    service_text = ", ".join(core_services[:2]) if core_services else "전문 서비스"
+    # Template-specific 필드 추출
+    if "wine" in template_id:
+        main_field = _to_list(slots.get("wine_lineup") or [])
+        field_label = "와인"
+    elif "tax" in template_id:
+        main_field = _to_list(slots.get("tax_services") or [])
+        field_label = "서비스"
+    elif "career" in template_id:
+        main_field = [slots.get("author_info", "")]
+        field_label = "경력"
+    else:
+        main_field = _to_list(slots.get("core_services") or [])
+        field_label = "서비스"
+
+    service_text = ", ".join(main_field[:2]) if main_field else "전문 서비스"
     quick_answer = f"{business_name}은(는) {service_text}를 제공하는 전문 업체입니다."
 
     jsonld: list[dict] = [{
@@ -205,10 +218,10 @@ def _build_render_spec(contract: dict) -> dict:
         jsonld[0]["sameAs"] = [f"https://pf.kakao.com/{kakao_channel}"]
 
     faq_items = []
-    if core_services:
+    if main_field:
         faq_items = [
-            {"q": f"{business_name}은 어떤 서비스를 제공하나요?",
-             "a": f"{', '.join(core_services)}를 제공합니다."},
+            {"q": f"{business_name}의 {field_label}이 무엇인가요?",
+             "a": f"{', '.join(main_field[:3])}를 제공합니다."},
             {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
             {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
         ]
@@ -232,7 +245,7 @@ def _build_render_spec(contract: dict) -> dict:
             "jsonld": jsonld,
             "blocks": [
                 {"type": "Hero", "h1": business_name},
-                {"type": "Services", "items": [{"name": s, "desc": ""} for s in core_services[:4]]},
+                {"type": "Services", "items": [{"name": s, "desc": ""} for s in main_field[:4]]},
                 {"type": "QuickAnswer", "text": quick_answer},
                 {"type": "Contact", "phone": phone, "kakao": kakao_channel},
                 {"type": "FAQ", "items": faq_items},
@@ -875,7 +888,14 @@ async def chat_with_p1(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
         ) from e
+    except Exception as e:
+        logger.error("P1 예상치 못한 오류 site=%s: %s", sid, e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
+        ) from e
 
+    logger.info("P1 응답 data=%s", data)
     meta: dict = data.get("metadata", {})
     candidates: list = meta.get("question_candidates") or []
     current_slot = candidates[0].get("slot", "") if candidates else ""
