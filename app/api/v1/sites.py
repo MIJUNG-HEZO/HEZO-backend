@@ -194,8 +194,18 @@ def _build_render_spec(contract: dict) -> dict:
     if "wine" in template_id:
         main_field = _to_list(slots.get("wine_lineup") or [])
         field_label = "와인"
-        # wine-market: H1은 첫 와인 이름 (또는 featured_wine)
-        h1_text = slots.get("featured_wine") or (main_field[0] if main_field else business_name)
+        # wine-market: H1은 첫 와인 이름만 (슬래시 앞부분)
+        if slots.get("wine_items"):
+            try:
+                import json
+                wine_items = json.loads(slots["wine_items"]) if isinstance(slots["wine_items"], str) else slots["wine_items"]
+                h1_text = wine_items[0].get("name", business_name) if wine_items else business_name
+            except (json.JSONDecodeError, TypeError, KeyError):
+                # wine_items 파싱 실패 → wine_lineup의 첫 번째 이름만 추출
+                h1_text = (main_field[0].split("/")[0] if main_field else business_name)
+        else:
+            # wine_items 없음 → wine_lineup의 첫 번째 이름만 추출
+            h1_text = (main_field[0].split("/")[0] if main_field else business_name)
     elif "tax" in template_id:
         main_field = _to_list(slots.get("tax_services") or [])
         field_label = "서비스"
