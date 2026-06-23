@@ -618,19 +618,42 @@ async def create_preview(
     try:
         obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=f"sites/{sid}/contract_final.json")
         contract_data = json.loads(obj["Body"].read().decode("utf-8"))
-        # contract_final.json은 1.0.0 스키마, _build_render_spec는 0.1.0 스키마 기대
-        # 간단히 slots 데이터만 추출해서 _build_contract 스키마로 변환
+        # contract_final.json은 1.0.0 스키마, 1.0.0 → 0.1.0 변환
         if contract_data.get("schema_version") == "1.0.0":
-            contract = contract_data
-            logger.info("preview: S3 contract_final.json 사용 site=%s", sid)
+            # 1.0.0 → 0.1.0 변환
+            contract = {
+                "schema_version": "0.1.0",
+                "ids": contract_data.get("ids", {}),
+                "template": contract_data.get("template", {}),
+                "slots": contract_data.get("slots", {}),
+            }
+            logger.info("preview: S3 contract_final.json 변환 사용 site=%s", sid)
+        else:
+            logger.warning("preview: contract_final schema mismatch, database 사용 site=%s", sid)
     except Exception as e:
-        logger.debug("preview: S3 contract_final.json 읽기 실패 site=%s - %s, database에서 읽기", sid, e)
+        logger.warning("preview: S3 contract_final.json 읽기 실패 site=%s - %s, database에서 읽기", sid, e)
         contract = None
 
     if not contract:
-        contract = _build_contract(sid)
+        try:
+            contract = _build_contract(sid)
+        except Exception as e:
+            logger.error("preview: _build_contract 실패 site=%s - %s", sid, e)
+            return _PreviewResponse(
+                site_id=sid,
+                preview_mode="error",
+                message=f"Contract 로드 실패: {str(e)[:100]}",
+            )
 
-    render_spec = _build_render_spec(contract)
+    try:
+        render_spec = _build_render_spec(contract)
+    except Exception as e:
+        logger.error("preview: _build_render_spec 실패 site=%s - %s", sid, e)
+        return _PreviewResponse(
+            site_id=sid,
+            preview_mode="error",
+            message=f"Render spec 생성 실패: {str(e)[:100]}",
+        )
 
     s3 = boto3.client("s3", region_name=_AWS_REGION)
 
