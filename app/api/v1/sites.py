@@ -634,11 +634,11 @@ async def create_preview(
 
     s3 = boto3.client("s3", region_name=_AWS_REGION)
 
-    # render_spec → S3 (P3 Worker가 읽음)
+    # ✅ Preview용 render_spec → S3 (경로 분리: preview/render_spec.json)
     try:
         s3.put_object(
             Bucket=_ARTIFACTS_BUCKET,
-            Key=f"sites/{sid}/render_spec.json",
+            Key=f"sites/{sid}/preview/render_spec.json",
             Body=json.dumps(render_spec, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
         )
