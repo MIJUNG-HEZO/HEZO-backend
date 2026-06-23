@@ -248,11 +248,16 @@ def _build_render_spec(contract: dict) -> dict:
     # Template-specific 필드 추출
     service_items: list[dict] = []  # Services block용 items
     field_label = "서비스"
+    hero_subheadline = ""      # hero-subheadline 주입용 (wine-market TONIGHT PICK 등)
+    hero_featured_price = ""   # hero strong.price 주입용
 
     if "wine" in template_id:
         field_label = "와인"
         parsed_wines = _parse_wine_lineup(slots.get("wine_lineup") or "")
-        h1_text = parsed_wines[0]["name"] if parsed_wines else business_name
+        featured = parsed_wines[0] if parsed_wines else {}
+        h1_text = featured.get("name") or business_name
+        hero_subheadline = featured.get("desc") or ""
+        hero_featured_price = featured.get("price") or ""
         service_items = [
             {
                 "name": w["name"],
@@ -344,7 +349,7 @@ def _build_render_spec(contract: dict) -> dict:
             },
             "jsonld": jsonld,
             "blocks": [
-                {"type": "Hero", "h1": h1_text},
+                {"type": "Hero", "h1": h1_text, "subheadline": hero_subheadline, "featured_price": hero_featured_price},
                 {"type": "Services", "items": service_items},
                 {"type": "QuickAnswer", "text": quick_answer},
                 {"type": "Contact", "phone": phone, "kakao": kakao_channel},
