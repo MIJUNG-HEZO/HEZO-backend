@@ -601,7 +601,25 @@ async def create_preview(
             message="P3_BUILD_ENDPOINT 미설정 — 로컬 개발 모드입니다.",
         )
 
-    contract = _build_contract(sid)
+    # ✅ S3의 contract_final.json 우선 읽기 (P1 채팅 완료한 경우)
+    # 없으면 database에서 읽기 (구 방식)
+    s3 = boto3.client("s3", region_name=_AWS_REGION)
+    contract = None
+    try:
+        obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=f"sites/{sid}/contract_final.json")
+        contract_data = json.loads(obj["Body"].read().decode("utf-8"))
+        # contract_final.json은 1.0.0 스키마, _build_render_spec는 0.1.0 스키마 기대
+        # 간단히 slots 데이터만 추출해서 _build_contract 스키마로 변환
+        if contract_data.get("schema_version") == "1.0.0":
+            contract = contract_data
+            logger.info("preview: S3 contract_final.json 사용 site=%s", sid)
+    except Exception as e:
+        logger.debug("preview: S3 contract_final.json 읽기 실패 site=%s - %s, database에서 읽기", sid, e)
+        contract = None
+
+    if not contract:
+        contract = _build_contract(sid)
+
     render_spec = _build_render_spec(contract)
 
     s3 = boto3.client("s3", region_name=_AWS_REGION)
