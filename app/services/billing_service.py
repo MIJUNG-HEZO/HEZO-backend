@@ -173,6 +173,16 @@ class BillingService:
                 status_code=404,
             )
 
+        # Toss 호출 전 subscription 존재 확인 — Toss 승인 후 DB 실패 시 환불 로직 없으므로
+        # 선제적으로 차단하여 "결제 완료 + 구독 미업그레이드" 상태를 방지
+        subscription = await self.subscription_repository.get_active_by_user_id_for_update(user_id)
+        if subscription is None:
+            raise AppException(
+                code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                message="Active subscription not found.",
+                status_code=404,
+            )
+
         # Toss 결제 승인 API 호출
         secret_key = settings.toss_payments_secret_key
         auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
@@ -206,13 +216,6 @@ class BillingService:
                 pg_response_json=toss_response,
             )
 
-            subscription = await self.subscription_repository.get_active_by_user_id_for_update(user_id)
-            if subscription is None:
-                raise AppException(
-                    code=error_codes.SUBSCRIPTION_NOT_FOUND,
-                    message="Active subscription not found.",
-                    status_code=404,
-                )
             await self.subscription_repository.change_plan(
                 subscription,
                 plan_id=plan.id,
