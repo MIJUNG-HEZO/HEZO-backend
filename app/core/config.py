@@ -74,6 +74,7 @@ class Settings(BaseSettings):
         alias="TOSS_PAYMENTS_FAIL_URL",
     )
     p1_agent_endpoint: str | None = Field(default=None, alias="P1_AGENT_ENDPOINT")
+    p1_agentcore_runtime_arn: str | None = Field(default=None, alias="P1_AGENTCORE_RUNTIME_ARN")
     p3_build_endpoint: str | None = Field(default=None, alias="P3_BUILD_ENDPOINT")
 
     model_config = SettingsConfigDict(

@@ -1,6 +1,9 @@
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
@@ -156,37 +159,288 @@ class _StructurePayload(BaseModel):
     template_id: str = ""
 
 
+def _to_list(value: object, sep: str = ",") -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [s.strip() for s in value.split(sep) if s.strip()]
+    return []
+
+
+def _parse_service_items(raw: str) -> list[dict]:
+    """서비스 목록 파싱. "서비스명/설명, 서비스명2/설명2" 형식 지원.
+    슬래시 없으면 name만 채우고 desc는 빈 문자열."""
+    result = []
+    for item in _to_list(raw):
+        if "/" in item:
+            name, desc = item.split("/", 1)
+            result.append({"name": name.strip(), "desc": desc.strip()})
+        else:
+            result.append({"name": item, "desc": ""})
+    return result
+
+
+def _parse_wine_lineup(wine_lineup: str) -> list[dict]:
+    """
+    wine_lineup 문자열 파싱. 가격에 쉼표 포함(55,000원) 처리.
+    형식: "와인명/종류/가격/설명, 와인명2/..."
+    반환: [{"name": .., "type": .., "price": .., "desc": ..}, ...]
+    """
+    if not wine_lineup or not wine_lineup.strip():
+        return []
+
+    # 쉼표 분리 후, 숫자로 시작하는 부분은 앞 항목 가격의 연속으로 병합
+    # "이탈리아 키안티/레드/55" + ",000원/스테이크 페어링" → 합침
+    raw_parts = wine_lineup.split(",")
+    merged: list[str] = []
+    current = ""
+    for part in raw_parts:
+        stripped = part.lstrip()
+        if current and stripped and stripped[0].isdigit():
+            current = current + "," + part
+        else:
+            if current.strip():
+                merged.append(current.strip())
+            current = part
+    if current.strip():
+        merged.append(current.strip())
+
+    wines: list[dict] = []
+    for entry in merged:
+        parts = [p.strip() for p in entry.split("/")]
+        if len(parts) >= 4:
+            wines.append({
+                "name": parts[0],
+                "type": parts[1],
+                "price": parts[2],
+                "desc": "/".join(parts[3:]),
+            })
+        elif len(parts) == 3:
+            wines.append({"name": parts[0], "type": parts[1], "price": parts[2], "desc": ""})
+        elif parts and parts[0]:
+            wines.append({"name": parts[0], "type": "", "price": "", "desc": ""})
+    return wines
+
+
+_TEMPLATE_CATEGORY_MAP: dict[str, str] = {
+    "01-clinic-landing": "landing", "02-course-landing": "landing",
+    "03-saas-product": "landing",   "05-lifting-clinic": "landing",
+    "07-legal-consulting": "landing","13-tax-accounting": "landing",
+    "17-solar-energy": "landing",    "landing_general": "landing",
+    "01-food-travel-blog": "blog",  "03-developer-docs": "blog",
+    "05-expert-column": "blog",     "17-career-notebook": "blog",
+    "01-cafe-menu": "store",        "05-booking-service": "store",
+    "06-oops-nail": "store",        "10-wine-market": "store",
+}
+
+
+def _get_template_category(template_id: str) -> str:
+    if template_id in _TEMPLATE_CATEGORY_MAP:
+        return _TEMPLATE_CATEGORY_MAP[template_id]
+    if "blog" in template_id:
+        return "blog"
+    if any(k in template_id for k in ("store", "cafe", "menu", "nail", "wine")):
+        return "store"
+    return "landing"
+
+
+def _build_render_spec(contract: dict) -> dict:
+    """Contract JSON → P3가 소비하는 simplified render_spec (프리뷰용, template-specific)."""
+    slots = contract.get("slots", {})
+    template = contract.get("template", {})
+    template_id = template.get("template_id") or "01-clinic-landing"
+    template_category = _get_template_category(template_id)
+
+    business_name = slots.get("business_name") or "My Business"
+    phone         = slots.get("phone") or ""
+    kakao_channel = slots.get("kakao_channel") or ""
+    business_hours = slots.get("business_hours") or "평일 09:00-18:00"
+
+    # Template-specific 필드 추출
+    service_items: list[dict] = []  # Services block용 items
+    field_label = "서비스"
+    hero_subheadline = ""      # hero-subheadline 주입용 (wine-market TONIGHT PICK 등)
+    hero_featured_price = ""   # hero strong.price 주입용
+
+    if "wine" in template_id:
+        field_label = "와인"
+        parsed_wines = _parse_wine_lineup(slots.get("wine_lineup") or "")
+        featured = parsed_wines[0] if parsed_wines else {}
+        h1_text = featured.get("name") or business_name
+        hero_subheadline = featured.get("desc") or ""
+        hero_featured_price = featured.get("price") or ""
+        service_items = [
+            {
+                "name": w["name"],
+                "desc": f"{w['type']} | {w['desc']}" if w.get("desc") else w.get("type", ""),
+                "price": w["price"],
+            }
+            for w in parsed_wines[:4]
+        ]
+        main_names = [w["name"] for w in parsed_wines[:3]]
+        service_text = ", ".join(main_names) if main_names else "프리미엄 와인"
+        faq_items = [
+            {
+                "q": f"{business_name}에서 판매하는 와인은 무엇인가요?",
+                "a": f"{service_text} 등 엄선된 와인을 취급합니다.",
+            },
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "구매 문의는 어떻게 하나요?", "a": "전화 또는 방문으로 문의해 주세요."},
+        ]
+
+    elif "tax" in template_id:
+        field_label = "서비스"
+        parsed_tax = _parse_service_items(slots.get("tax_services") or "")
+        h1_text = f"{slots.get('business_region', '전문')} 세무회계 서비스"
+        service_names = [s["name"] for s in parsed_tax]
+        service_text = ", ".join(service_names[:2]) if service_names else "세무회계 서비스"
+        service_items = parsed_tax[:3]
+        faq_items = [
+            {"q": f"{business_name}의 서비스가 무엇인가요?",
+             "a": f"{service_text}를 제공합니다."},
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
+        ]
+
+    elif "career" in template_id:
+        field_label = "경력"
+        author_info = slots.get("author_info", "")
+        portfolio = _parse_service_items(slots.get("portfolio_projects") or "")
+        learning = _parse_service_items(slots.get("learning_activities") or "")
+        h1_text = author_info if author_info else business_name
+        service_text = author_info or "포트폴리오"
+        # note-card 3개: 포트폴리오 2개 + 학습 1개
+        service_items = (portfolio[:2] + learning[:1])[:3]
+        if not service_items and author_info:
+            service_items = [{"name": author_info, "desc": ""}]
+        faq_items = [
+            {"q": "어떤 경력을 가지고 계신가요?", "a": service_text},
+            {"q": "연락 방법이 어떻게 되나요?", "a": "전화 또는 이메일로 문의해 주세요."},
+        ]
+
+    else:
+        main_field = _to_list(slots.get("core_services") or [])
+        h1_text = business_name
+        service_text = ", ".join(main_field[:2]) if main_field else "전문 서비스"
+        service_items = [{"name": s, "desc": ""} for s in main_field[:4]]
+        faq_items = [
+            {"q": f"{business_name}의 {field_label}이 무엇인가요?",
+             "a": f"{service_text}를 제공합니다."},
+            {"q": "영업 시간이 어떻게 되나요?", "a": business_hours},
+            {"q": "상담은 어떻게 신청하나요?", "a": "전화 또는 카카오톡으로 문의해 주세요."},
+        ]
+
+    quick_answer = f"{business_name}은(는) {service_text}를 제공하는 전문 업체입니다."
+
+    jsonld: list[dict] = [{
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        "name": business_name,
+        "telephone": phone,
+        "openingHours": business_hours,
+    }]
+    if kakao_channel:
+        jsonld[0]["sameAs"] = [f"https://pf.kakao.com/{kakao_channel}"]
+
+    return {
+        "schema_version": "1.0.0",
+        "template_id": template_id,
+        "template_category": template_category,
+        "pages": [{
+            "route": "/",
+            "title_h1": h1_text,
+            "seo": {
+                "title": f"{business_name} | 공식 홈페이지",
+                "description": f"{business_name}의 {service_text} 서비스. 지금 바로 상담받으세요.",
+                "og": {
+                    "title": f"{business_name} | 공식 홈페이지",
+                    "description": f"{service_text} 전문 {business_name}",
+                    "type": "website",
+                },
+            },
+            "jsonld": jsonld,
+            "blocks": [
+                {"type": "Hero", "h1": h1_text, "subheadline": hero_subheadline, "featured_price": hero_featured_price},
+                {"type": "Services", "items": service_items},
+                {"type": "QuickAnswer", "text": quick_answer},
+                {"type": "Contact", "phone": phone, "kakao": kakao_channel},
+                {"type": "FAQ", "items": faq_items},
+            ],
+        }],
+    }
+
+
+def _inline_preview_css(html: str, site_id: str, s3_client: object) -> str:
+    """./static/*.css 링크 태그를 S3에서 읽어 <style> 태그로 인라인 치환."""
+    def _replace(m: re.Match) -> str:
+        href = m.group(1)
+        css_name = href.rsplit("/", 1)[-1]
+        try:
+            obj = s3_client.get_object(  # type: ignore[union-attr]
+                Bucket=_ARTIFACTS_BUCKET,
+                Key=f"sites/{site_id}/preview/static/{css_name}",
+            )
+            css = obj["Body"].read().decode("utf-8")
+            return f"<style>{css}</style>"
+        except Exception:
+            return m.group(0)
+
+    return re.sub(
+        r'<link\b[^>]*\bhref=["\'](\./static/[^"\']+\.css)["\'][^>]*(?:/)?>',
+        _replace,
+        html,
+        flags=re.IGNORECASE,
+    )
+
+
 def _build_contract(site_id: str) -> dict:
     """
-    온보딩 데이터에서 G slot-based Contract JSON (schema_version: 0.1.0) 생성.
+    챗봇 수집 슬롯(7개) → Contract JSON (schema_version: 0.1.0).
     생성 에이전트(Bedrock)가 소비하는 확정 포맷.
     """
-    overrides = _site_onboarding.get(site_id, {})
+    o = _site_onboarding.get(site_id, {})
 
-    # ── 슬롯 값 추출 ──────────────────────────────────────────────────────────
-    business_name   = overrides.get("business_name", "")
-    services        = overrides.get("services", [])
-    contact         = overrides.get("contact", {})
-    phone           = contact.get("phone", "")
-    email           = contact.get("email", "")
-    address         = contact.get("address", "")
-    template_id     = overrides.get("template_id", "landing_general")
-    category        = overrides.get("structure", "landing")
+    business_name    = o.get("business_name", "")
+    business_region  = o.get("business_region", "한국")
+    core_services    = _to_list(o.get("core_services", []))
+    target_audience  = _to_list(o.get("target_audience", ["잠재 고객"]))
+    phone            = o.get("phone", "")
+    kakao_raw        = o.get("kakao_channel", "")
+    kakao_channel    = "" if kakao_raw in ("없음", "none", "") else kakao_raw
+    business_hours   = o.get("business_hours", "평일 09:00-18:00")
+    template_id      = o.get("template_id", "landing_general")
+    category         = o.get("structure", "landing")
 
-    # 템플릿 slug: "landing_tax" → "tax", "01-clinic-landing" → "clinic"
-    slug_raw        = template_id.replace("landing_", "").replace("-landing", "")
-    slug            = slug_raw.split("-")[0] if "-" in slug_raw else slug_raw
+    slug_raw  = template_id.replace("landing_", "").replace("-landing", "")
+    slug      = slug_raw.split("-")[0] if "-" in slug_raw else slug_raw
 
-    # 필수 슬롯 채움 여부 판단 — generation_ready 기준
-    filled          = bool(business_name and services and phone)
-    slot_score      = round(
-        (bool(business_name) * 0.3)
-        + (bool(services) * 0.3)
-        + (bool(phone) * 0.2)
-        + (bool(address) * 0.1)
-        + (bool(email) * 0.1),
+    contact_method = ["phone"] if phone else []
+    if kakao_channel:
+        contact_method.append("kakao")
+    contact_method.append("contact_form")
+
+    cta = (["무료 상담 신청", "카카오톡 상담"] if kakao_channel
+           else ["무료 상담 신청", "전화 상담"])
+
+    brand_keywords = ([business_name] + core_services[:2]) if business_name else ["전문 서비스"]
+
+    required = bool(business_name and core_services and phone)
+    slot_score = round(
+        bool(business_name) * 0.25
+        + bool(business_region) * 0.10
+        + bool(core_services) * 0.25
+        + bool(target_audience) * 0.15
+        + bool(phone) * 0.15
+        + bool(business_hours) * 0.10,
         2,
     )
+
+    def _slot_status(val: object) -> dict:
+        filled = bool(val)
+        return {"status": "filled" if filled else "missing",
+                "confidence": 1.0 if filled else 0,
+                "source": "user" if filled else None,
+                "ask_count": 1 if filled else 0}
 
     return {
         "schema_version": "0.1.0",
@@ -201,56 +455,52 @@ def _build_contract(site_id: str) -> dict:
             "slug": slug,
         },
         "slots": {
-            "business_name":    business_name,
-            "industry":         "general",
-            "business_type":    category,
-            "business_region":  address or "한국",
-            "site_goal":        "lead_capture",
-            "target_audience":  ["잠재 고객"],
-            "core_services":    services,
-            "pain_points":      [],
-            "required_sections":["hero", "services", "faq", "contact_form", "footer"],
-            "tone_style":       ["professional", "trustworthy"],
-            "brand_keywords":   [business_name] if business_name else ["전문 서비스"],
-            "cta":              ["지금 상담 신청", "카카오톡 상담"],
-            "contact_method":   (
-                ["phone", "email", "contact_form"]
-                if email
-                else ["phone", "contact_form"]
-            ),
-            "phone":            phone,
-            "kakao_channel":    "",
-            "business_hours":   "평일 09:00-18:00",
-            "business_number":  None,
+            "business_name":         business_name,
+            "industry":              o.get("industry", "general"),
+            "business_type":         category,
+            "business_region":       business_region,
+            "site_goal":             "lead_capture",
+            "target_audience":       target_audience,
+            "core_services":         core_services,
+            "pain_points":           [],
+            "required_sections":     ["hero", "services", "faq", "contact_form", "footer"],
+            "tone_style":            ["professional", "trustworthy"],
+            "brand_keywords":        brand_keywords,
+            "cta":                   cta,
+            "contact_method":        contact_method,
+            "phone":                 phone,
+            "kakao_channel":         kakao_channel,
+            "business_hours":        business_hours,
+            "business_number":       None,
             "reference_site_exists": False,
-            "reference_sites":  [],
+            "reference_sites":       [],
         },
         "slot_status": {
-            "business_name":    {"status": "filled" if business_name else "missing", "confidence": 1.0 if business_name else 0, "source": "user", "ask_count": 1},
-            "core_services":    {"status": "filled" if services else "missing",      "confidence": 0.9 if services else 0,       "source": "user", "ask_count": 1},
-            "phone":            {"status": "filled" if phone else "missing",          "confidence": 1.0 if phone else 0,          "source": "user", "ask_count": 1},
-            "business_number":  {"status": "missing", "confidence": 0, "source": None, "ask_count": 0},
+            "business_name":   _slot_status(business_name),
+            "business_region": _slot_status(business_region),
+            "core_services":   _slot_status(core_services),
+            "target_audience": _slot_status(target_audience),
+            "phone":           _slot_status(phone),
+            "kakao_channel":   {"status": "filled" if kakao_channel else "skipped",
+                                "confidence": 1.0 if kakao_channel else 0,
+                                "source": "user", "ask_count": 1},
+            "business_hours":  _slot_status(business_hours),
+            "business_number": {"status": "missing", "confidence": 0, "source": None, "ask_count": 0},
         },
-        "evidence": {
-            "wiki_refs":      [],
-            "research_refs":  [],
-        },
+        "evidence": {"wiki_refs": [], "research_refs": []},
         "gates": {
             "completeness_score": slot_score,
             "preview_ready":      True,
-            "generation_ready":   filled,
-            "missing_items": (
-                []
-                if filled
-                else [
-                    {"slot_key": k, "reason": f"{k} 필드가 누락되었습니다."}
-                    for k in (
-                        (["business_name"] if not business_name else [])
-                        + (["core_services"] if not services else [])
-                        + (["phone"] if not phone else [])
-                    )
+            "generation_ready":   required,
+            "missing_items": [
+                {"slot_key": k, "reason": f"{k} 필드가 누락되었습니다."}
+                for k, v in [
+                    ("business_name", business_name),
+                    ("core_services", core_services),
+                    ("phone", phone),
                 ]
-            ),
+                if not v
+            ],
             "unresolved_items": [],
         },
     }
@@ -401,6 +651,19 @@ async def update_onboarding_additional(
     return None
 
 
+@router.patch("/{site_id}/onboarding/slots", status_code=status.HTTP_204_NO_CONTENT)
+async def save_chat_slots(
+    site_id: UUID,
+    payload: dict,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> None:
+    """챗봇 수집 슬롯 7개를 한 번에 저장."""
+    sid = str(site_id)
+    if sid not in _site_onboarding:
+        _site_onboarding[sid] = {}
+    _site_onboarding[sid].update(payload)
+
+
 @router.post("/{site_id}/onboarding/complete", status_code=status.HTTP_204_NO_CONTENT)
 async def complete_onboarding(
     site_id: UUID,
@@ -423,20 +686,20 @@ async def create_contract(
 
 class _PreviewResponse(BaseModel):
     site_id: str
-    preview_mode: str  # "triggered" | "mock"
+    preview_mode: str  # "p3" | "mock"
+    preview_html: str | None = None
     preview_url: str | None = None
     message: str
 
 
-@router.post("/{site_id}/preview", response_model=_PreviewResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{site_id}/preview", response_model=_PreviewResponse, status_code=status.HTTP_200_OK)
 async def create_preview(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
 ) -> _PreviewResponse:
     """
-    P3 빌드 워커 preview 모드 트리거.
-    - P3_BUILD_ENDPOINT 설정됨: P3 HTTP 서비스에 비동기 트리거
-    - P3_BUILD_ENDPOINT 미설정: mock 202 반환 (로컬 개발용)
+    Contract JSON → render_spec S3 업로드 → P3 Worker 호출 → HTML 반환.
+    P3_BUILD_ENDPOINT 미설정 시 mock 응답.
     """
     sid = str(site_id)
     endpoint = settings.p3_build_endpoint
@@ -447,7 +710,68 @@ async def create_preview(
             message="P3_BUILD_ENDPOINT 미설정 — 로컬 개발 모드입니다.",
         )
 
-    contract = _build_contract(sid)
+    # ✅ S3의 contract_final.json 우선 읽기 (P1 채팅 완료한 경우)
+    # 없으면 database에서 읽기 (구 방식)
+    s3 = boto3.client("s3", region_name=_AWS_REGION)
+    contract = None
+    try:
+        obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=f"sites/{sid}/contract_final.json")
+        contract_data = json.loads(obj["Body"].read().decode("utf-8"))
+        # contract_final.json은 1.0.0 스키마, 1.0.0 → 0.1.0 변환
+        if contract_data.get("schema_version") == "1.0.0":
+            # 1.0.0 → 0.1.0 변환
+            contract = {
+                "schema_version": "0.1.0",
+                "ids": contract_data.get("ids", {}),
+                "template": contract_data.get("template", {}),
+                "slots": contract_data.get("slots", {}),
+            }
+            logger.info("preview: S3 contract_final.json 변환 사용 site=%s", sid)
+        else:
+            logger.warning("preview: contract_final schema mismatch, database 사용 site=%s", sid)
+    except Exception as e:
+        logger.warning("preview: S3 contract_final.json 읽기 실패 site=%s - %s, database에서 읽기", sid, e)
+        contract = None
+
+    if not contract:
+        try:
+            contract = _build_contract(sid)
+        except Exception as e:
+            logger.error("preview: _build_contract 실패 site=%s - %s", sid, e)
+            return _PreviewResponse(
+                site_id=sid,
+                preview_mode="error",
+                message=f"Contract 로드 실패: {str(e)[:100]}",
+            )
+
+    try:
+        render_spec = _build_render_spec(contract)
+    except Exception as e:
+        logger.error("preview: _build_render_spec 실패 site=%s - %s", sid, e)
+        return _PreviewResponse(
+            site_id=sid,
+            preview_mode="error",
+            message=f"Render spec 생성 실패: {str(e)[:100]}",
+        )
+
+    s3 = boto3.client("s3", region_name=_AWS_REGION)
+
+    # ✅ Preview용 render_spec → S3 (경로 분리: preview/render_spec.json)
+    try:
+        s3.put_object(
+            Bucket=_ARTIFACTS_BUCKET,
+            Key=f"sites/{sid}/preview/render_spec.json",
+            Body=json.dumps(render_spec, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except (BotoCoreError, ClientError) as e:
+        logger.error("render_spec S3 업로드 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="render_spec 저장에 실패했습니다.",
+        ) from e
+
+    # P3 Worker 호출 (동기 HTTP — P3는 내부적으로 S3 읽기/쓰기)
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
@@ -455,19 +779,30 @@ async def create_preview(
                 json={"site_id": sid, "mode": "preview", "contract": contract},
             )
             resp.raise_for_status()
-            data = resp.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.error("P3 preview 트리거 실패 site=%s: %s", sid, e)
+        logger.error("P3 preview 호출 실패 site=%s: %s", sid, e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="프리뷰 생성 서비스에 연결할 수 없습니다.",
         ) from e
 
+    # P3가 업로드한 HTML을 S3에서 읽어 CSS 인라인 후 반환
+    try:
+        obj = s3.get_object(Bucket=_ARTIFACTS_BUCKET, Key=f"sites/{sid}/preview/index.html")
+        raw_html = obj["Body"].read().decode("utf-8")
+        preview_html = _inline_preview_css(raw_html, sid, s3)
+    except (BotoCoreError, ClientError) as e:
+        logger.error("preview HTML S3 읽기 실패 site=%s: %s", sid, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="프리뷰 HTML 조회에 실패했습니다.",
+        ) from e
+
     return _PreviewResponse(
         site_id=sid,
-        preview_mode="triggered",
-        preview_url=data.get("preview_url"),
-        message="프리뷰 생성이 시작되었습니다.",
+        preview_mode="p3",
+        preview_html=preview_html,
+        message="프리뷰가 생성되었습니다.",
     )
 
 
@@ -626,6 +961,16 @@ _P1_MOCK_MESSAGES = [
 _p1_mock_index: dict[str, int] = {}
 
 
+_p1_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_p1_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _p1_executor
+    if _p1_executor is None:
+        _p1_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="p1-agentcore")
+    return _p1_executor
+
+
 @router.post("/{site_id}/chat", response_model=ChatResponse)
 async def chat_with_p1(
     site_id: UUID,
@@ -634,14 +979,14 @@ async def chat_with_p1(
 ) -> ChatResponse:
     """
     P1 챗봇 에이전트 프록시.
-    - P1_AGENT_ENDPOINT 설정됨: AgentCore /invocations로 포워딩
-    - P1_AGENT_ENDPOINT 미설정: 순차 mock 응답 (로컬 개발용)
+    - P1_AGENTCORE_RUNTIME_ARN 설정: boto3 bedrock-agentcore 호출
+    - 미설정: 순차 mock 응답 (로컬 개발용)
     """
     sid = str(site_id)
     session_key = f"{sid}:{payload.session_id}"
-    endpoint = settings.p1_agent_endpoint
+    runtime_arn = settings.p1_agentcore_runtime_arn
 
-    if not endpoint:
+    if not runtime_arn:
         idx = _p1_mock_index.get(session_key, 0)
         msg = _P1_MOCK_MESSAGES[min(idx, len(_P1_MOCK_MESSAGES) - 1)]
         _p1_mock_index[session_key] = idx + 1
@@ -651,45 +996,71 @@ async def chat_with_p1(
             assistant_message=msg,
             turn_status="ready_for_contract_compile" if turn_done else "answer_accepted",
             next_stage="contract_compile" if turn_done else "proactive_questioning",
+            current_slot="",
             mock=True,
         )
 
     agentcore_payload = {
-        "action": "chat_turn",
-        "session_id": payload.session_id,
-        "site_id": sid,
-        "user_id": str(current_user.id),
-        "user_message": payload.user_message,
-        "domain": payload.domain,
-        "template_id": payload.template_id,
+        "sessionId": payload.session_id,
+        "inputText": payload.user_message,
+        "sessionAttributes": {
+            "action": "chat_turn",
+            "site_id": sid,
+            "user_id": str(current_user.id),
+            "answer": payload.user_message,
+            "answered_slot": payload.answered_slot or "",
+            "known_answers": json.dumps(payload.known_answers or {}, ensure_ascii=False),
+            "domain": payload.domain or "general",
+            "domain_label": payload.domain_label or "",
+            "category": payload.category or "landing",
+            "selected_template": payload.template_id or "",
+            "storage_mode": "aws",
+        },
     }
+
+    def _invoke() -> dict:
+        client = boto3.client("bedrock-agentcore", region_name=_AWS_REGION)
+        resp = client.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            payload=json.dumps(agentcore_payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+        body_key = "body" if "body" in resp else next(
+            (k for k in resp if hasattr(resp[k], "read")), None
+        )
+        if body_key is None:
+            logger.error("P1 AgentCore 응답 키 목록: %s", list(resp.keys()))
+            raise ValueError(f"AgentCore 응답에서 body를 찾을 수 없음: {list(resp.keys())}")
+        return json.loads(resp[body_key].read())
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{endpoint.rstrip('/')}/invocations",
-                json=agentcore_payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as e:
+        data: dict = await asyncio.get_running_loop().run_in_executor(_get_p1_executor(), _invoke)
+    except (BotoCoreError, ClientError, ValueError) as e:
         logger.error("P1 AgentCore 오류 site=%s: %s", sid, e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
         ) from e
-    except httpx.RequestError as e:
-        logger.error("P1 AgentCore 연결 실패 site=%s: %s", sid, e)
+    except Exception as e:
+        logger.error("P1 예상치 못한 오류 site=%s: %s", sid, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="챗봇 서비스에 연결할 수 없습니다.",
+            detail="챗봇 서비스에 일시적 오류가 발생했습니다.",
         ) from e
+
+    logger.info("P1 응답 data=%s", data)
+    meta: dict = data.get("metadata", {})
+    candidates: list = meta.get("question_candidates") or []
+    current_slot = candidates[0].get("slot", "") if candidates else ""
 
     return ChatResponse(
         session_id=payload.session_id,
-        assistant_message=data.get("assistant_message", ""),
-        turn_status=data.get("turn_status", "answer_accepted"),
-        next_stage=data.get("next_stage", "proactive_questioning"),
-        slot_filled=data.get("slot_filled", {}),
-        missing_slots=data.get("missing_slots", []),
+        assistant_message=data.get("output", ""),
+        turn_status=meta.get("turn_status", "answer_accepted"),
+        next_stage=meta.get("next_stage", "proactive_questioning"),
+        slot_filled=meta.get("known_answers", {}),
+        missing_slots=meta.get("missing_slots", []),
+        current_slot=current_slot,
         mock=False,
     )
