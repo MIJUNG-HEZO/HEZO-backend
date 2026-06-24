@@ -11,6 +11,7 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.schemas.auth import (
+    ChangePasswordRequest,
     EmailVerificationConfirmRequest,
     EmailVerificationConfirmResponse,
     EmailVerificationRequestResponse,
@@ -174,6 +175,19 @@ async def complete_oauth_signup(
         path=get_refresh_token_cookie_path(),
     )
     return oauth_response
+
+
+@router.patch("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> None:
+    await auth_service.change_password(
+        current_user.id,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
 
 
 @router.post(

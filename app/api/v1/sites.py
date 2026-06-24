@@ -112,9 +112,20 @@ def _get_pipeline_status(site_id: str) -> dict:
         )
         item = resp.get("Item")
         if item:
+            raw_status = item.get("publish_status", {}).get("S", "unknown")
+            # DynamoDB publish_status → 프론트 기대값 매핑
+            status_map = {
+                "building": "running",
+                "validating": "running",
+                "retrying": "running",
+                "published": "published",
+                "failed": "generation_failed",
+                "rolled_back": "generation_failed",
+            }
+            pipeline_status = status_map.get(raw_status, raw_status)
             return {
                 "site_id": site_id,
-                "pipeline_status": item.get("publish_status", {}).get("S", "unknown"),
+                "pipeline_status": pipeline_status,
                 "domain_url": item.get("domain_url", {}).get("S"),
                 "render_spec_s3_key": item.get("render_spec_s3_key", {}).get("S"),
                 "updated_at": item.get("updated_at", {}).get("S"),
@@ -804,11 +815,8 @@ async def create_preview(
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
-                f"{endpoint.rstrip('/')}/invocations",
-                json={
-                    "inputText": f"site_id={sid} mode=preview",
-                    "sessionAttributes": {"site_id": sid, "mode": "preview"},
-                },
+                f"{endpoint.rstrip('/')}/build",
+                json={"site_id": sid, "mode": "preview", "contract": contract},
             )
             resp.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
@@ -862,6 +870,7 @@ class _PipelineStatusResponse(BaseModel):
     execution_arn: str | None = None
     updated_at: str | None = None
     error: str | None = None
+    message: str | None = None
 
 
 class _PublishResponse(BaseModel):
