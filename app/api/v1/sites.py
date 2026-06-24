@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 _STEP_FUNCTIONS_ARN = os.environ.get("STEP_FUNCTIONS_ARN", "")         # hezo_pipeline 상태머신 ARN
 _ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "hezo-artifacts")
+_PIPELINE_TABLE = os.environ.get("PIPELINE_TABLE", "hezo_pipeline_state")
 _AWS_ENABLED = bool(_STEP_FUNCTIONS_ARN)                                # ARN 있으면 AWS 모드
 
 
@@ -62,10 +63,15 @@ def _extract_template_info(contract: dict) -> tuple[str, str]:
         template_id = t.get("template_id", "")
         # "13-tax-accounting" → "tax-accounting", "10-wine-market" → "wine-market"
         parts = template_id.split("-", 1)
-        ttype = parts[1] if len(parts) == 2 and parts[0].isdigit() else template_id
+        if len(parts) == 2 and parts[0].isdigit() and parts[1]:
+            ttype = parts[1]
+        elif template_id:
+            ttype = template_id
+        else:
+            ttype = "general"
     else:
         category = t.get("category", "landing")
-        ttype = t.get("slug", "general")
+        ttype = t.get("slug", "general") or "general"
     return ttype, category
 
 
@@ -107,7 +113,7 @@ def _get_pipeline_status(site_id: str) -> dict:
     try:
         ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
         resp = ddb.get_item(
-            TableName="hezo_pipeline_state",
+            TableName=_PIPELINE_TABLE,
             Key={"site_id": {"S": site_id}},
         )
         item = resp.get("Item")
@@ -139,7 +145,8 @@ def _get_pipeline_status(site_id: str) -> dict:
         sfn = _get_sfn_client()
         resp = sfn.list_executions(
             stateMachineArn=_STEP_FUNCTIONS_ARN,
-            maxResults=5,
+            statusFilter="RUNNING",
+            maxResults=10,
         )
         executions = resp.get("executions", [])
         site_exec = next(
@@ -163,7 +170,7 @@ def _get_pipeline_status(site_id: str) -> dict:
                 "pipeline_status": status_map.get(sfn_status, "unknown"),
                 "domain_url": None,
                 "execution_arn": site_exec.get("executionArn"),
-                "updated_at": updated.isoformat() if updated and hasattr(updated, "isoformat") else None,
+                "updated_at": updated.isoformat() if updated else None,
             }
     except (BotoCoreError, ClientError) as e:
         logger.warning("Step Functions 조회 실패: %s", e)
@@ -914,13 +921,31 @@ async def publish_site(
             contract_json = json.loads(obj["Body"].read().decode("utf-8"))
             logger.info("publish: S3 contract_final.json 사용 site=%s schema=%s",
                         sid, contract_json.get("schema_version"))
-        except (BotoCoreError, ClientError):
-            pass
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                pass  # 아직 P1 완료 안 됨 — mock으로 폴백
+            else:
+                logger.error("publish: S3 contract 읽기 실패 site=%s: %s", sid, e)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="계약 데이터를 불러올 수 없습니다.",
+                ) from e
+        except BotoCoreError as e:
+            logger.error("publish: S3 네트워크 오류 site=%s: %s", sid, e)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="계약 데이터를 불러올 수 없습니다.",
+            ) from e
 
         # 2) S3에 없으면 인메모리 mock으로 폴백 후 S3에 업로드
         if contract_json is None:
             contract_json = _build_contract(sid)
             logger.warning("publish: S3 contract 없음, mock 사용 site=%s", sid)
+            if not contract_json.get("gates", {}).get("generation_ready"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="채팅을 완료하여 홈페이지 정보를 입력해 주세요.",
+                )
             try:
                 s3.put_object(
                     Bucket=_ARTIFACTS_BUCKET,
