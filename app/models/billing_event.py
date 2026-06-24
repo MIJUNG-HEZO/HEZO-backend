@@ -16,12 +16,12 @@ class BillingEvent(UUIDPrimaryKeyMixin, Base):
 
     user_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("users.id"),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
     payment_request_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("payment_requests.id"),
+        ForeignKey("payment_requests.id", ondelete="SET NULL"),
         nullable=True,
     )
     event_type: Mapped[str] = mapped_column(String, nullable=False)

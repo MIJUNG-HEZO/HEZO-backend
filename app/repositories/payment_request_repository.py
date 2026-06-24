@@ -12,6 +12,25 @@ class PaymentRequestRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_pg_request_id(self, pg_request_id: str) -> PaymentRequest | None:
+        result = await self.session.execute(
+            select(PaymentRequest).where(PaymentRequest.pg_request_id == pg_request_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def update_status(
+        self,
+        payment_request: PaymentRequest,
+        *,
+        status: PaymentRequestStatus,
+        pg_response_json: dict[str, Any] | None = None,
+    ) -> PaymentRequest:
+        payment_request.status = status
+        if pg_response_json is not None:
+            payment_request.pg_response_json = pg_response_json
+        await self.session.flush()
+        return payment_request
+
     async def create(
         self,
         *,

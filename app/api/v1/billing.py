@@ -25,6 +25,7 @@ async def create_checkout(
 @router.post(
     "/confirm",
     response_model=BillingConfirmResponse,
+    status_code=status.HTTP_200_OK,
 )
 async def confirm_payment(
     payload: BillingConfirmRequest,
