@@ -1,6 +1,9 @@
+import base64
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
+
+import httpx
 
 from app.core.config import settings
 
@@ -72,3 +75,26 @@ class TossPaymentsClient:
         if not plan_name:
             raise ValueError("Plan name is required to build Toss Payments orderName.")
         return f"HEZO {plan_name} Plan"
+
+    def _auth_header(self) -> str:
+        token = base64.b64encode(f"{settings.toss_payments_secret_key}:".encode()).decode()
+        return f"Basic {token}"
+
+    async def confirm_payment(
+        self,
+        *,
+        payment_key: str,
+        order_id: str,
+        amount: int,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.tosspayments.com/v1/payments/confirm",
+                headers={
+                    "Authorization": self._auth_header(),
+                    "Content-Type": "application/json",
+                },
+                json={"paymentKey": payment_key, "orderId": order_id, "amount": amount},
+            )
+        response.raise_for_status()
+        return response.json()

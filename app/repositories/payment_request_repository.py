@@ -1,6 +1,7 @@
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import PaymentProvider, PaymentRequestStatus
@@ -10,6 +11,25 @@ from app.models.payment_request import PaymentRequest
 class PaymentRequestRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def get_by_pg_request_id(self, pg_request_id: str) -> PaymentRequest | None:
+        result = await self.session.execute(
+            select(PaymentRequest).where(PaymentRequest.pg_request_id == pg_request_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def update_status(
+        self,
+        payment_request: PaymentRequest,
+        *,
+        status: PaymentRequestStatus,
+        pg_response_json: dict[str, Any] | None = None,
+    ) -> PaymentRequest:
+        payment_request.status = status
+        if pg_response_json is not None:
+            payment_request.pg_response_json = pg_response_json
+        await self.session.flush()
+        return payment_request
 
     async def create(
         self,
@@ -44,5 +64,25 @@ class PaymentRequestRepository:
         pg_request_id: str,
     ) -> PaymentRequest:
         payment_request.pg_request_id = pg_request_id
+        await self.session.flush()
+        return payment_request
+
+    async def get_by_order_id_for_update(self, order_id: str) -> PaymentRequest | None:
+        stmt = (
+            select(PaymentRequest)
+            .where(PaymentRequest.pg_request_id == order_id)
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def confirm(
+        self,
+        payment_request: PaymentRequest,
+        *,
+        pg_response_json: dict[str, Any],
+    ) -> PaymentRequest:
+        payment_request.status = PaymentRequestStatus.APPROVED
+        payment_request.pg_response_json = pg_response_json
         await self.session.flush()
         return payment_request

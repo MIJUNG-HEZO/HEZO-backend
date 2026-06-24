@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends
 from app.api.deps import (
     CurrentUser,
     get_subscription_service,
-    require_development_environment,
     require_email_verified,
 )
 from app.schemas.subscription import (
@@ -17,7 +16,6 @@ from app.services.subscription_service import SubscriptionService
 router = APIRouter(
     prefix="/dev/subscriptions",
     tags=["Development"],
-    dependencies=[Depends(require_development_environment)],
 )
 
 
