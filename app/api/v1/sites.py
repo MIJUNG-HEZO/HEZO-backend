@@ -83,7 +83,7 @@ def _start_pipeline(site_id: str, template_type: str, template_category: str) ->
     returns: { execution_arn, status, started_at }
     """
     sfn = _get_sfn_client()
-    execution_name = f"site-{site_id[:8]}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    execution_name = f"s-{site_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     input_payload = json.dumps(
         {
             "site_id": site_id,
@@ -823,7 +823,11 @@ async def create_preview(
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{endpoint.rstrip('/')}/build",
-                json={"site_id": sid, "mode": "preview", "contract": contract},
+                json={
+                    "sessionId": str(sid),
+                    "inputText": f"site_id={sid} mode=preview",
+                    "sessionAttributes": {"site_id": str(sid), "mode": "preview"},
+                },
             )
             resp.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
