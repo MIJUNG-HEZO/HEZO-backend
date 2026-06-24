@@ -66,3 +66,23 @@ class PaymentRequestRepository:
         payment_request.pg_request_id = pg_request_id
         await self.session.flush()
         return payment_request
+
+    async def get_by_order_id_for_update(self, order_id: str) -> PaymentRequest | None:
+        stmt = (
+            select(PaymentRequest)
+            .where(PaymentRequest.pg_request_id == order_id)
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def confirm(
+        self,
+        payment_request: PaymentRequest,
+        *,
+        pg_response_json: dict[str, Any],
+    ) -> PaymentRequest:
+        payment_request.status = PaymentRequestStatus.APPROVED
+        payment_request.pg_response_json = pg_response_json
+        await self.session.flush()
+        return payment_request

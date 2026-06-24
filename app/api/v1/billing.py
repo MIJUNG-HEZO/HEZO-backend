@@ -27,9 +27,14 @@ async def create_checkout(
     response_model=BillingConfirmResponse,
     status_code=status.HTTP_200_OK,
 )
-async def confirm_checkout(
+async def confirm_payment(
     payload: BillingConfirmRequest,
     current_user: Annotated[CurrentUser, Depends(require_email_verified)],
     billing_service: Annotated[BillingService, Depends(get_billing_service)],
 ) -> BillingConfirmResponse:
-    return await billing_service.confirm_checkout(user_id=current_user.id, payload=payload)
+    return await billing_service.confirm_payment(
+        user_id=current_user.id,
+        payment_key=payload.payment_key,
+        order_id=payload.order_id,
+        amount=payload.amount,
+    )

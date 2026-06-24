@@ -1,9 +1,12 @@
+import base64
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
+from app.core.config import settings
 from app.core.constants import FREE_PLAN_CODE
 from app.core.enums import PaymentProvider, PaymentRequestStatus
 from app.core.exceptions import AppException
@@ -13,8 +16,9 @@ from app.repositories.payment_request_repository import PaymentRequestRepository
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.billing import BillingCheckoutRequest, BillingCheckoutResponse, BillingConfirmRequest, BillingConfirmResponse
-from app.services.subscription_service import SubscriptionService
+from app.schemas.billing import BillingCheckoutRequest, BillingCheckoutResponse, BillingConfirmResponse
+
+TOSS_CONFIRM_URL = "https://api.tosspayments.com/v1/payments/confirm"
 
 
 class BillingService:
@@ -26,6 +30,7 @@ class BillingService:
         payment_request_repository: PaymentRequestRepository | None = None,
         billing_event_repository: BillingEventRepository | None = None,
         toss_payments_client: TossPaymentsClient | None = None,
+        subscription_repository: SubscriptionRepository | None = None,
     ) -> None:
         self.session = session
         self.plan_repository = plan_repository or PlanRepository(session)
@@ -35,7 +40,7 @@ class BillingService:
         )
         self.billing_event_repository = billing_event_repository or BillingEventRepository(session)
         self.toss_payments_client = toss_payments_client or TossPaymentsClient()
-        self.subscription_repository = SubscriptionRepository(session)
+        self.subscription_repository = subscription_repository or SubscriptionRepository(session)
 
     async def create_checkout(
         self,
@@ -126,62 +131,39 @@ class BillingService:
             payment_params=payment_params,
         )
 
-    async def confirm_checkout(
+    async def confirm_payment(
         self,
         *,
         user_id: UUID,
-        payload: BillingConfirmRequest,
+        payment_key: str,
+        order_id: str,
+        amount: int,
     ) -> BillingConfirmResponse:
-        payment_request = await self.payment_request_repository.get_by_pg_request_id(
-            payload.order_id
-        )
-        if payment_request is None or payment_request.user_id != user_id:
+        payment_request = await self.payment_request_repository.get_by_order_id_for_update(order_id)
+        if payment_request is None:
             raise AppException(
-                code=error_codes.PAYMENT_REQUEST_FAILED,
+                code=error_codes.PAYMENT_REQUEST_NOT_FOUND,
                 message="Payment request not found.",
                 status_code=404,
             )
-        if payment_request.status == PaymentRequestStatus.APPROVED:
-            plan = await self.plan_repository.get_by_id(payment_request.plan_id)
-            return BillingConfirmResponse(
-                payment_request_id=payment_request.id,
-                plan_code=plan.code if plan else "",
-                amount=payment_request.amount,
-                status=payment_request.status,
-            )
-        if payment_request.amount != payload.amount:
+        if payment_request.user_id != user_id:
             raise AppException(
-                code=error_codes.PAYMENT_REQUEST_FAILED,
-                message="Payment amount mismatch.",
+                code=error_codes.FORBIDDEN,
+                message="Not authorized to confirm this payment.",
+                status_code=403,
+            )
+        if payment_request.status == PaymentRequestStatus.APPROVED:
+            raise AppException(
+                code=error_codes.PAYMENT_ALREADY_CONFIRMED,
+                message="Payment has already been confirmed.",
+                status_code=409,
+            )
+        if payment_request.amount != amount:
+            raise AppException(
+                code=error_codes.PAYMENT_AMOUNT_MISMATCH,
+                message="Payment amount does not match.",
                 status_code=400,
             )
-
-        try:
-            pg_response = await self.toss_payments_client.confirm_payment(
-                payment_key=payload.payment_key,
-                order_id=payload.order_id,
-                amount=payload.amount,
-            )
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            status_code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else 0
-            error_body = e.response.text if isinstance(e, httpx.HTTPStatusError) else str(e)
-            await self.payment_request_repository.update_status(
-                payment_request,
-                status=PaymentRequestStatus.PENDING,
-                pg_response_json={"error": error_body, "status_code": status_code},
-            )
-            await self.billing_event_repository.create(
-                user_id=user_id,
-                payment_request_id=payment_request.id,
-                event_type="payment_failed",
-                payload_json={"error": error_body},
-            )
-            await self.session.commit()
-            raise AppException(
-                code=error_codes.PAYMENT_REQUEST_FAILED,
-                message="Payment confirmation failed.",
-                status_code=502,
-            ) from e
 
         plan = await self.plan_repository.get_by_id(payment_request.plan_id)
         if plan is None:
@@ -191,26 +173,69 @@ class BillingService:
                 status_code=404,
             )
 
+        # Toss 호출 전 subscription 존재 확인 — Toss 승인 후 DB 실패 시 환불 로직 없으므로
+        # 선제적으로 차단하여 "결제 완료 + 구독 미업그레이드" 상태를 방지
+        subscription = await self.subscription_repository.get_active_by_user_id_for_update(user_id)
+        if subscription is None:
+            raise AppException(
+                code=error_codes.SUBSCRIPTION_NOT_FOUND,
+                message="Active subscription not found.",
+                status_code=404,
+            )
+
+        # Toss 결제 승인 API 호출
+        secret_key = settings.toss_payments_secret_key
+        auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
         try:
-            await self.payment_request_repository.update_status(
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    TOSS_CONFIRM_URL,
+                    headers={
+                        "Authorization": f"Basic {auth_header}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"paymentKey": payment_key, "orderId": order_id, "amount": amount},
+                )
+            toss_response = resp.json()
+            if resp.status_code != 200:
+                raise AppException(
+                    code=error_codes.PAYMENT_CONFIRM_FAILED,
+                    message=toss_response.get("message", "Payment confirmation failed."),
+                    status_code=502,
+                )
+        except httpx.RequestError as exc:
+            raise AppException(
+                code=error_codes.PAYMENT_CONFIRM_FAILED,
+                message="Failed to connect to payment gateway.",
+                status_code=502,
+            ) from exc
+
+        try:
+            await self.payment_request_repository.confirm(
                 payment_request,
-                status=PaymentRequestStatus.APPROVED,
-                pg_response_json=pg_response,
+                pg_response_json=toss_response,
             )
-            # upgrade_plan 내부에서 commit() 호출하므로 이 시점에 payment_request 업데이트도 함께 커밋됨
-            subscription_service = SubscriptionService(self.session)
-            await subscription_service.upgrade_plan(
-                user_id=user_id,
-                target_plan_code=plan.code,
+
+            await self.subscription_repository.change_plan(
+                subscription,
+                plan_id=plan.id,
+                started_at=datetime.now(UTC),
             )
+
             await self.billing_event_repository.create(
                 user_id=user_id,
                 payment_request_id=payment_request.id,
                 event_type="payment_confirmed",
-                payload_json={"plan_code": plan.code, "amount": payment_request.amount},
+                payload_json={
+                    "plan_code": plan.code,
+                    "amount": amount,
+                    "payment_key": payment_key,
+                    "order_id": order_id,
+                },
             )
             await self.session.commit()
         except AppException:
+            await self.session.rollback()
             raise
         except Exception:
             await self.session.rollback()

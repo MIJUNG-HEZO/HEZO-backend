@@ -207,6 +207,34 @@ class AuthService:
             await self.session.rollback()
             raise
 
+    async def change_password(self, user_id: UUID, *, current_password: str, new_password: str) -> None:
+        user = await self.user_repository.get_by_id_for_update(user_id)
+        if user is None or user.deleted_at is not None:
+            raise AppException(
+                code=error_codes.UNAUTHORIZED,
+                message="Authentication is required.",
+                status_code=401,
+            )
+        if user.password_hash is None:
+            raise AppException(
+                code=error_codes.INVALID_PASSWORD,
+                message="소셜 로그인 계정은 비밀번호를 변경할 수 없습니다.",
+                status_code=400,
+            )
+        if not self.password_service.verify_password(current_password, user.password_hash):
+            raise AppException(
+                code=error_codes.INVALID_PASSWORD,
+                message="현재 비밀번호가 올바르지 않습니다.",
+                status_code=400,
+            )
+        new_hash = self.password_service.hash_password(new_password)
+        try:
+            await self.user_repository.update_password_hash(user, password_hash=new_hash)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+
     def raise_invalid_refresh_token(self) -> Never:
         raise AppException(
             code=error_codes.INVALID_REFRESH_TOKEN,
