@@ -257,3 +257,62 @@ async def get_snapshot(
         last_measured_at=now,
         from_cache=False,
     )
+
+
+def _build_history_from_items(
+    items: list[dict], days: int = 7
+) -> list[dict]:
+    today = datetime.now(timezone.utc).date()
+    date_map: dict[str, int | None] = {
+        (today - timedelta(days=i)).isoformat(): None for i in range(days - 1, -1, -1)
+    }
+    for item in items:
+        d = item.get("date")
+        if d and d in date_map:
+            date_map[d] = item.get("response_ms")
+    return [{"date": d, "value": v} for d, v in date_map.items()]
+
+
+def _load_history(site_id: str, days: int = 7) -> list[dict]:
+    try:
+        ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        resp = ddb.query(
+            TableName=_REPORT_TABLE,
+            KeyConditionExpression="pk = :pk AND sk >= :start",
+            FilterExpression="record_type = :t",
+            ExpressionAttributeValues={
+                ":pk": {"S": f"SITE#{site_id}"},
+                ":start": {"S": f"REPORT#{start}"},
+                ":t": {"S": "snapshot"},
+            },
+        )
+        items = []
+        for item in resp.get("Items", []):
+            raw = item.get("payload", {}).get("S")
+            measured_at = item.get("measured_at", {}).get("S", "")
+            if raw and measured_at:
+                payload = json.loads(raw)
+                items.append({
+                    "date": measured_at[:10],
+                    "response_ms": payload.get("response_ms"),
+                })
+        return items
+    except Exception as e:
+        logger.warning("DDB history 조회 실패 site=%s: %s", site_id, e)
+        return []
+
+
+@router.get("/history", response_model=MonitoringHistory)
+async def get_history(
+    site_id: str,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> MonitoringHistory:
+    raw_items = _load_history(site_id, days=7)
+    history = _build_history_from_items(raw_items, days=7)
+
+    return MonitoringHistory(
+        response_ms_history=[ResponseMsPoint(**p) for p in history],
+        bot_crawls=BotCrawls(),
+        bot_crawls_available=False,
+    )

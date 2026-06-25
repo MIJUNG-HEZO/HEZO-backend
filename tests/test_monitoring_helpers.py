@@ -1,5 +1,6 @@
 import pytest
 from app.api.v1.monitoring import (
+    _build_history_from_items,
     _extract_json_ld_types,
     _geo_files_status,
 )
@@ -41,3 +42,28 @@ def test_geo_files_status_partial():
     result = _geo_files_status(responses)
     assert result["llms_full_txt"] is False
     assert result["llms_txt"] is True
+
+
+def test_build_history_fills_missing_days():
+    items = [
+        {"date": "2026-06-24", "response_ms": 300},
+        {"date": "2026-06-22", "response_ms": 250},
+    ]
+    result = _build_history_from_items(items, days=7)
+    assert len(result) == 7
+    dates = [r["date"] for r in result]
+    assert "2026-06-24" in dates
+    assert "2026-06-22" in dates
+    # 없는 날은 None
+    missing = next(r for r in result if r["date"] == "2026-06-23")
+    assert missing["value"] is None
+
+
+def test_build_history_returns_sorted_asc():
+    items = [
+        {"date": "2026-06-24", "response_ms": 300},
+        {"date": "2026-06-20", "response_ms": 200},
+    ]
+    result = _build_history_from_items(items, days=7)
+    dates = [r["date"] for r in result]
+    assert dates == sorted(dates)
