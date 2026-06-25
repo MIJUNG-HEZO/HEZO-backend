@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -111,7 +112,7 @@ async def _measure_site(domain_url: str) -> dict:
                 geo_codes[key] = 0
 
     json_ld_types = _extract_json_ld_types(html_body)
-    ssl_days = _check_ssl_expiry(hostname)
+    ssl_days = await asyncio.to_thread(_check_ssl_expiry, hostname)
 
     pagespeed_mobile: int | None = None
     pagespeed_desktop: int | None = None
