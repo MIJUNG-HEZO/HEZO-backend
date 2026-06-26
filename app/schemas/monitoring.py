@@ -14,6 +14,14 @@ class JsonLd(BaseModel):
     service: bool
 
 
+class LlmsFullQuality(BaseModel):
+    faq_count: int = 0
+    char_count: int = 0
+    has_core_services: bool = False
+    has_faq: bool = False
+    has_core_pages: bool = False
+
+
 class MonitoringSnapshot(BaseModel):
     geo_files: GeoFiles
     json_ld: JsonLd
@@ -21,6 +29,7 @@ class MonitoringSnapshot(BaseModel):
     response_ms: int | None = None
     pagespeed_mobile: int | None = None
     pagespeed_desktop: int | None = None
+    llms_full_quality: LlmsFullQuality | None = None
     last_measured_at: str
     from_cache: bool = False
 
