@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import re
 import socket
 import ssl
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import Annotated
 from urllib.parse import urlparse
 
@@ -30,9 +32,17 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
 _PIPELINE_TABLE = os.environ.get("PIPELINE_TABLE", "hezo_pipeline_state")
 _REPORT_TABLE = "report_scores"
+_CF_LOG_BUCKET = os.environ.get("CF_LOG_BUCKET", "hezo-cloudfront-logs")
 _PAGESPEED_API_KEY = os.environ.get("PAGESPEED_API_KEY")
 _SNAPSHOT_CACHE_HOURS = 24
 _HTTP_TIMEOUT = 5.0
+
+_BOT_PATTERNS: dict[str, re.Pattern] = {
+    "gpt_bot": re.compile(r"GPTBot", re.I),
+    "claude_bot": re.compile(r"ClaudeBot", re.I),
+    "perplexity_bot": re.compile(r"PerplexityBot", re.I),
+    "yeti": re.compile(r"Yeti", re.I),
+}
 
 router = APIRouter(prefix="/sites/{site_id}/monitoring", tags=["Monitoring"])
 
@@ -191,6 +201,68 @@ def _get_domain_url(site_id: str) -> str | None:
         return None
 
 
+def _get_cf_distribution_id(site_id: str) -> str | None:
+    try:
+        ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
+        resp = ddb.get_item(
+            TableName=_PIPELINE_TABLE,
+            Key={"site_id": {"S": site_id}},
+        )
+        item = resp.get("Item", {})
+        return item.get("cloudfront_distribution_id", {}).get("S")
+    except (BotoCoreError, ClientError) as e:
+        logger.warning("DDB get cf_dist_id 실패 site=%s: %s", site_id, e)
+        return None
+
+
+def _parse_cf_logs_for_bots(site_id: str, cf_dist_id: str, days: int = 7) -> dict[str, int]:
+    """S3 CloudFront 표준 로그에서 AI 봇 User-Agent를 집계한다.
+
+    로그 파일 경로: s3://{CF_LOG_BUCKET}/{site_id}/{dist_id}.YYYY-MM-DD-HH.{unique}.gz
+    CloudFront 로그 포맷(tab 구분): date time x-edge-location sc-bytes c-ip cs-method cs(Host)
+      cs-uri-stem sc-status cs(Referer) cs(User-Agent) ...  (User-Agent = index 10, 0-based)
+    """
+    counts: dict[str, int] = {"gpt_bot": 0, "claude_bot": 0, "perplexity_bot": 0, "yeti": 0}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    s3 = boto3.client("s3", region_name=_AWS_REGION)
+    prefix = f"{site_id}/{cf_dist_id}."
+
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=_CF_LOG_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                # 파일명: {prefix}{dist}.YYYY-MM-DD-HH.{unique}.gz → date는 세 번째 .(역순 두 번째)
+                parts = key.split(".")
+                try:
+                    log_date_str = parts[-3][:10]  # YYYY-MM-DD
+                    if log_date_str < cutoff.isoformat():
+                        continue
+                except (IndexError, ValueError):
+                    pass
+
+                try:
+                    body = s3.get_object(Bucket=_CF_LOG_BUCKET, Key=key)["Body"].read()
+                    with gzip.open(BytesIO(body)) as f:
+                        for raw_line in f:
+                            line = raw_line.decode("utf-8", errors="ignore")
+                            if line.startswith("#"):
+                                continue
+                            fields = line.split("\t")
+                            if len(fields) <= 10:
+                                continue
+                            ua = fields[10]
+                            for bot_key, pattern in _BOT_PATTERNS.items():
+                                if pattern.search(ua):
+                                    counts[bot_key] += 1
+                except Exception as e:
+                    logger.warning("CF 로그 파싱 실패 key=%s: %s", key, e)
+    except Exception as e:
+        logger.warning("CF 로그 목록 조회 실패 site=%s: %s", site_id, e)
+
+    return counts
+
+
 def _load_latest_snapshot(site_id: str) -> dict | None:
     """report_scores DDB에서 최근 24시간 이내 캐시 조회."""
     try:
@@ -337,8 +409,17 @@ async def get_history(
     raw_items = _load_history(site_id, days=7)
     history = _build_history_from_items(raw_items, days=7)
 
+    cf_dist_id = await asyncio.to_thread(_get_cf_distribution_id, site_id)
+    if cf_dist_id:
+        counts = await asyncio.to_thread(_parse_cf_logs_for_bots, site_id, cf_dist_id)
+        bot_crawls = BotCrawls(**counts)
+        bot_crawls_available = True
+    else:
+        bot_crawls = BotCrawls()
+        bot_crawls_available = False
+
     return MonitoringHistory(
         response_ms_history=[ResponseMsPoint(**p) for p in history],
-        bot_crawls=BotCrawls(),
-        bot_crawls_available=False,
+        bot_crawls=bot_crawls,
+        bot_crawls_available=bot_crawls_available,
     )
