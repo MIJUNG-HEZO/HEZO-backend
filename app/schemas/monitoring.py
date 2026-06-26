@@ -68,3 +68,21 @@ class ScoreHistory(BaseModel):
     latest_score: int | None = None
     latest_delta: int = 0
     action_items: list[ActionItem] = []
+
+
+class LlmCitationRates(BaseModel):
+    claude: float | None = None
+    chatgpt: float | None = None
+    perplexity: float | None = None
+    naver: float | None = None
+
+
+class CitationPoint(BaseModel):
+    date: str
+    rates: LlmCitationRates
+
+
+class CitationHistory(BaseModel):
+    citation_history: list[CitationPoint]
+    latest: LlmCitationRates | None = None
+    query_count: int = 0
