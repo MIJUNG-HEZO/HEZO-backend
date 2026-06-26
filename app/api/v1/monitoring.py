@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import CurrentUser, require_authenticated
 from app.schemas.monitoring import (
+    ActionItem,
     BotCrawls,
     GeoFiles,
     JsonLd,
@@ -25,6 +26,8 @@ from app.schemas.monitoring import (
     MonitoringHistory,
     MonitoringSnapshot,
     ResponseMsPoint,
+    ScoreHistory,
+    ScorePoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -422,4 +425,90 @@ async def get_history(
         response_ms_history=[ResponseMsPoint(**p) for p in history],
         bot_crawls=bot_crawls,
         bot_crawls_available=bot_crawls_available,
+    )
+
+
+def _load_score_history(site_id: str, days: int = 90) -> list[dict]:
+    """report_scores DDB에서 리포트 에이전트가 저장한 weekly overall_score 조회."""
+    try:
+        ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        resp = ddb.query(
+            TableName=_REPORT_TABLE,
+            KeyConditionExpression="pk = :pk AND sk BETWEEN :start AND :end",
+            ExpressionAttributeValues={
+                ":pk": {"S": f"SITE#{site_id}"},
+                ":start": {"S": f"REPORT#{cutoff}"},
+                ":end": {"S": "REPORT#9999"},
+            },
+            ScanIndexForward=True,
+        )
+        result = []
+        for item in resp.get("Items", []):
+            sk = item.get("sk", {}).get("S", "")
+            if not sk.startswith("REPORT#"):
+                continue
+            score_n = item.get("overall_score", {}).get("N")
+            if score_n is None:
+                continue
+            result.append({
+                "date": sk.replace("REPORT#", ""),
+                "score": int(float(score_n)),
+                "delta": int(float(item.get("delta", {}).get("N", "0"))),
+                "action_items_raw": item.get("action_items", {}).get("S", "[]"),
+            })
+        return result
+    except Exception as e:
+        logger.warning("score_history 조회 실패 site=%s: %s", site_id, e)
+        return []
+
+
+def _parse_action_items(raw: str) -> list[ActionItem]:
+    """Haiku가 생성한 액션 아이템 JSON을 ActionItem 리스트로 변환."""
+    try:
+        items = json.loads(raw)
+        result = []
+        for item in items:
+            if isinstance(item, dict):
+                text = item.get("text", item.get("action", str(item)))
+                level_raw = item.get("level", item.get("priority", "yellow")).lower()
+            else:
+                text = str(item)
+                level_raw = "yellow"
+            # 🔴→red, 🟡→yellow, 🟢→green 이모지 변환
+            if "🔴" in text or "red" in level_raw or "high" in level_raw:
+                level = "red"
+                text = text.replace("🔴", "").strip()
+            elif "🟢" in text or "green" in level_raw or "low" in level_raw:
+                level = "green"
+                text = text.replace("🟢", "").strip()
+            else:
+                level = "yellow"
+                text = text.replace("🟡", "").strip()
+            result.append(ActionItem(level=level, text=text))
+        return result
+    except Exception:
+        return []
+
+
+@router.get("/score-history", response_model=ScoreHistory)
+async def get_score_history(
+    site_id: str,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> ScoreHistory:
+    """리포트 에이전트가 주 1회 측정한 AI 가시성 종합점수 히스토리 (최대 90일)."""
+    items = _load_score_history(site_id, days=90)
+
+    if not items:
+        return ScoreHistory(score_history=[], latest_score=None, latest_delta=0, action_items=[])
+
+    score_history = [ScorePoint(date=it["date"], score=it["score"], delta=it["delta"]) for it in items]
+    latest = items[-1]
+    action_items = _parse_action_items(latest["action_items_raw"])
+
+    return ScoreHistory(
+        score_history=score_history,
+        latest_score=latest["score"],
+        latest_delta=latest["delta"],
+        action_items=action_items,
     )
