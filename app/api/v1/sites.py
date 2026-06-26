@@ -1004,10 +1004,12 @@ async def publish_site(
 async def get_pipeline_status(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+    site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> _PipelineStatusResponse:
     """
     파이프라인 실행 상태 폴링용 엔드포인트.
     프론트엔드가 3초마다 호출하여 생성 에이전트 → 빌드 → 검증 → 배포 진행 상황 표시.
+    published 감지 시 PostgreSQL is_published 동기화 (멱등적).
     """
     sid = str(site_id)
     if not _AWS_ENABLED:
@@ -1017,6 +1019,14 @@ async def get_pipeline_status(
             message="로컬 모드",
         )
     result = _get_pipeline_status(sid)
+    if result.get("pipeline_status") == "published":
+        try:
+            await site_service.sync_published_from_pipeline(
+                user_id=current_user.id,
+                site_id=site_id,
+            )
+        except Exception as e:
+            logger.warning("pipeline/status: DB 동기화 실패 site=%s: %s", sid, e)
     return _PipelineStatusResponse(**result)
 
 
