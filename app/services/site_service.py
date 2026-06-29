@@ -186,6 +186,30 @@ class SiteService:
 
         return SiteResponse.model_validate(site)
 
+    async def sync_published_from_pipeline(
+        self,
+        *,
+        user_id: UUID,
+        site_id: UUID,
+    ) -> None:
+        """Step Functions 파이프라인 완료 후 PostgreSQL is_published 동기화.
+
+        plan 한도 체크 없음 — 파이프라인이 이미 실행됐으므로 DB 상태만 맞춘다.
+        is_published=True이면 no-op (멱등적).
+        """
+        site = await self.site_repository.get_active_site_by_id_and_owner(
+            site_id=site_id,
+            owner_id=user_id,
+        )
+        if site is None or site.is_published:
+            return
+        try:
+            await self.site_repository.publish(site=site)
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            raise
+
     async def check_publish_availability(
         self,
         *,
