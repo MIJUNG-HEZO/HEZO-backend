@@ -50,3 +50,21 @@ class MonitoringHistory(BaseModel):
     response_ms_history: list[ResponseMsPoint]
     bot_crawls: BotCrawls
     bot_crawls_available: bool = False
+
+
+class ScorePoint(BaseModel):
+    date: str
+    score: int
+    delta: int = 0
+
+
+class ActionItem(BaseModel):
+    level: str   # "red" | "yellow" | "green"
+    text: str
+
+
+class ScoreHistory(BaseModel):
+    score_history: list[ScorePoint]
+    latest_score: int | None = None
+    latest_delta: int = 0
+    action_items: list[ActionItem] = []
