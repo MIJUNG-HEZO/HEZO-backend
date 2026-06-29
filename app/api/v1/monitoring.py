@@ -19,6 +19,7 @@ from app.schemas.monitoring import (
     BotCrawls,
     GeoFiles,
     JsonLd,
+    LlmsFullQuality,
     MonitoringHistory,
     MonitoringSnapshot,
     ResponseMsPoint,
@@ -57,6 +58,19 @@ def _extract_json_ld_types(html: str) -> set[str]:
 
 def _geo_files_status(responses: dict[str, int]) -> dict[str, bool]:
     return {key: (code == 200) for key, code in responses.items()}
+
+
+def _parse_llms_full_quality(content: str) -> dict:
+    if not content:
+        return {"faq_count": 0, "char_count": 0, "has_core_services": False, "has_faq": False, "has_core_pages": False}
+    faq_count = len(re.findall(r"^Q:", content, re.MULTILINE))
+    return {
+        "faq_count": faq_count,
+        "char_count": len(content),
+        "has_core_services": "## 핵심 서비스" in content,
+        "has_faq": "## FAQ" in content,
+        "has_core_pages": "## 핵심 페이지" in content,
+    }
 
 
 def _check_ssl_expiry(hostname: str) -> int | None:
@@ -103,11 +117,18 @@ async def _measure_site(domain_url: str) -> dict:
         except Exception:
             pass
 
-        # GEO 파일 상태 코드
+        # GEO 파일 상태 코드 (llms-full.txt는 GET으로 내용 파싱)
+        llms_full_content = ""
         for key, url in geo_paths.items():
             try:
-                r = await client.head(url)
-                geo_codes[key] = r.status_code
+                if key == "llms_full_txt":
+                    r = await client.get(url)
+                    geo_codes[key] = r.status_code
+                    if r.status_code == 200:
+                        llms_full_content = r.text
+                else:
+                    r = await client.head(url)
+                    geo_codes[key] = r.status_code
             except Exception:
                 geo_codes[key] = 0
 
@@ -152,6 +173,7 @@ async def _measure_site(domain_url: str) -> dict:
         "response_ms": response_ms,
         "pagespeed_mobile": pagespeed_mobile,
         "pagespeed_desktop": pagespeed_desktop,
+        "llms_full_quality": _parse_llms_full_quality(llms_full_content),
     }
 
 
@@ -231,6 +253,7 @@ async def get_snapshot(
 
     cached = _load_latest_snapshot(site_id)
     if cached:
+        raw_lq = cached.get("llms_full_quality")
         return MonitoringSnapshot(
             geo_files=GeoFiles(**cached["geo_files"]),
             json_ld=JsonLd(**cached["json_ld"]),
@@ -238,6 +261,7 @@ async def get_snapshot(
             response_ms=cached.get("response_ms"),
             pagespeed_mobile=cached.get("pagespeed_mobile"),
             pagespeed_desktop=cached.get("pagespeed_desktop"),
+            llms_full_quality=LlmsFullQuality(**raw_lq) if raw_lq else None,
             last_measured_at=cached["last_measured_at"],
             from_cache=True,
         )
@@ -247,6 +271,7 @@ async def get_snapshot(
     measured["last_measured_at"] = now
     _save_snapshot(site_id, measured)
 
+    raw_lq = measured.get("llms_full_quality")
     return MonitoringSnapshot(
         geo_files=GeoFiles(**measured["geo_files"]),
         json_ld=JsonLd(**measured["json_ld"]),
@@ -254,6 +279,7 @@ async def get_snapshot(
         response_ms=measured.get("response_ms"),
         pagespeed_mobile=measured.get("pagespeed_mobile"),
         pagespeed_desktop=measured.get("pagespeed_desktop"),
+        llms_full_quality=LlmsFullQuality(**raw_lq) if raw_lq else None,
         last_measured_at=now,
         from_cache=False,
     )
