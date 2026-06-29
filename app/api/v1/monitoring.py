@@ -20,8 +20,11 @@ from app.api.deps import CurrentUser, require_authenticated
 from app.schemas.monitoring import (
     ActionItem,
     BotCrawls,
+    CitationHistory,
+    CitationPoint,
     GeoFiles,
     JsonLd,
+    LlmCitationRates,
     LlmsFullQuality,
     MonitoringHistory,
     MonitoringSnapshot,
@@ -470,7 +473,7 @@ def _parse_action_items(raw: str) -> list[ActionItem]:
         result = []
         for item in items:
             if isinstance(item, dict):
-                text = item.get("text", item.get("action", str(item)))
+                text = item.get("text", item.get("content", item.get("action", str(item))))
                 level_raw = item.get("level", item.get("priority", "yellow")).lower()
             else:
                 text = str(item)
@@ -511,4 +514,81 @@ async def get_score_history(
         latest_score=latest["score"],
         latest_delta=latest["delta"],
         action_items=action_items,
+    )
+
+
+def _load_citation_history(site_id: str, days: int = 90) -> list[dict]:
+    """report_scores DDB에서 CITATION# SK 항목 조회."""
+    try:
+        ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        resp = ddb.query(
+            TableName=_REPORT_TABLE,
+            KeyConditionExpression="pk = :pk AND sk BETWEEN :start AND :end",
+            ExpressionAttributeValues={
+                ":pk": {"S": f"SITE#{site_id}"},
+                ":start": {"S": f"CITATION#{cutoff}"},
+                ":end": {"S": "CITATION#9999"},
+            },
+            ScanIndexForward=True,
+        )
+        result = []
+        for item in resp.get("Items", []):
+            sk = item.get("sk", {}).get("S", "")
+            if not sk.startswith("CITATION#"):
+                continue
+
+            def _rate(key: str) -> float | None:
+                n = item.get(f"{key}_citation_rate", {}).get("N")
+                return round(float(n), 2) if n is not None else None
+
+            result.append({
+                "date": sk.replace("CITATION#", ""),
+                "claude": _rate("claude"),
+                "chatgpt": _rate("chatgpt"),
+                "perplexity": _rate("perplexity"),
+                "naver": _rate("naver"),
+                "query_count": int(item.get("query_count", {}).get("N", "0")),
+            })
+        return result
+    except Exception as e:
+        logger.warning("citation_history 조회 실패 site=%s: %s", site_id, e)
+        return []
+
+
+@router.get("/citation-history", response_model=CitationHistory)
+async def get_citation_history(
+    site_id: str,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> CitationHistory:
+    """리포트 에이전트가 주 1회 측정한 LLM별 인용률 히스토리 (최대 90일)."""
+    items = _load_citation_history(site_id, days=90)
+
+    if not items:
+        return CitationHistory(citation_history=[], latest=None, query_count=0)
+
+    citation_history = [
+        CitationPoint(
+            date=it["date"],
+            rates=LlmCitationRates(
+                claude=it["claude"],
+                chatgpt=it["chatgpt"],
+                perplexity=it["perplexity"],
+                naver=it["naver"],
+            ),
+        )
+        for it in items
+    ]
+    latest_item = items[-1]
+    latest = LlmCitationRates(
+        claude=latest_item["claude"],
+        chatgpt=latest_item["chatgpt"],
+        perplexity=latest_item["perplexity"],
+        naver=latest_item["naver"],
+    )
+
+    return CitationHistory(
+        citation_history=citation_history,
+        latest=latest,
+        query_count=latest_item["query_count"],
     )
