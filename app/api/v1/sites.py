@@ -47,6 +47,28 @@ def _get_sfn_client():
     return boto3.client("stepfunctions", region_name=_AWS_REGION)
 
 
+def _batch_get_domain_urls(site_ids: list[str]) -> dict[str, str]:
+    """발행된 사이트 목록의 domain_url을 DynamoDB batch_get_item으로 조회."""
+    if not site_ids:
+        return {}
+    try:
+        ddb = boto3.client("dynamodb", region_name=_AWS_REGION)
+        keys = [{"site_id": {"S": sid}} for sid in site_ids]
+        resp = ddb.batch_get_item(
+            RequestItems={_PIPELINE_TABLE: {"Keys": keys, "ProjectionExpression": "site_id, domain_url"}}
+        )
+        result: dict[str, str] = {}
+        for item in resp.get("Responses", {}).get(_PIPELINE_TABLE, []):
+            sid = item.get("site_id", {}).get("S")
+            url = item.get("domain_url", {}).get("S")
+            if sid and url:
+                result[sid] = url
+        return result
+    except (BotoCoreError, ClientError) as e:
+        logger.warning("DynamoDB batch_get_item 실패: %s", e)
+        return {}
+
+
 def _get_s3_client():
     return boto3.client("s3", region_name=_AWS_REGION)
 
@@ -559,7 +581,13 @@ async def list_sites(
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteListResponse:
-    return await site_service.list_sites(user_id=current_user.id)
+    result = await site_service.list_sites(user_id=current_user.id)
+    published_ids = [str(item.id) for item in result.items if item.is_published]
+    if published_ids:
+        domain_urls = await asyncio.to_thread(_batch_get_domain_urls, published_ids)
+        for item in result.items:
+            item.domain_url = domain_urls.get(str(item.id))
+    return result
 
 
 @router.get("/{site_id}/publish-availability", response_model=SitePublishAvailabilityResponse)
