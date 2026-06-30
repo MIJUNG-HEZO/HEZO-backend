@@ -17,12 +17,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import CurrentUser, require_authenticated
+from app.core.config import settings
 from app.schemas.monitoring import (
     ActionItem,
     BotCrawls,
     CitationHistory,
     CitationPoint,
     GeoFiles,
+    InfraMetrics,
     JsonLd,
     LlmCitationRates,
     LlmsFullQuality,
@@ -598,4 +600,61 @@ async def get_citation_history(
         citation_history=citation_history,
         latest=latest,
         query_count=latest_item["query_count"],
+    )
+
+
+async def _query_prometheus(query: str) -> float | None:
+    """Prometheus instant query → 첫 번째 결과값 반환. 실패 시 None."""
+    url = settings.obs_prometheus_url
+    if not url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{url}/api/v1/query", params={"query": query})
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("data", {}).get("result", [])
+            if results:
+                return float(results[0]["value"][1])
+    except Exception as e:
+        logger.debug("Prometheus 쿼리 실패 query=%s: %s", query, e)
+    return None
+
+
+@router.get("/infra", response_model=InfraMetrics)
+async def get_infra_metrics(
+    site_id: str,
+    current_user: Annotated[CurrentUser, Depends(require_authenticated)],
+) -> InfraMetrics:
+    """고객사 EC2 인프라 메트릭 (node_exporter → Prometheus)."""
+    if not settings.obs_prometheus_url:
+        return InfraMetrics(available=False)
+
+    sid = site_id
+    cpu, memory, disk, net_rx, net_tx = await asyncio.gather(
+        _query_prometheus(
+            f'100 - (avg by (instance) (rate(node_cpu_seconds_total{{mode="idle",site_id="{sid}"}}[5m])) * 100)'
+        ),
+        _query_prometheus(
+            f'(1 - node_memory_MemAvailable_bytes{{site_id="{sid}"}} / node_memory_MemTotal_bytes{{site_id="{sid}"}}) * 100'
+        ),
+        _query_prometheus(
+            f'(1 - node_filesystem_avail_bytes{{site_id="{sid}",mountpoint="/"}} / node_filesystem_size_bytes{{site_id="{sid}",mountpoint="/"}}) * 100'
+        ),
+        _query_prometheus(
+            f'sum(rate(node_network_receive_bytes_total{{site_id="{sid}",device!="lo"}}[5m])) * 8 / 1024'
+        ),
+        _query_prometheus(
+            f'sum(rate(node_network_transmit_bytes_total{{site_id="{sid}",device!="lo"}}[5m])) * 8 / 1024'
+        ),
+    )
+
+    available = any(v is not None for v in [cpu, memory, disk])
+    return InfraMetrics(
+        cpu_percent=round(cpu, 1) if cpu is not None else None,
+        memory_percent=round(memory, 1) if memory is not None else None,
+        disk_percent=round(disk, 1) if disk is not None else None,
+        net_rx_kbps=round(net_rx, 1) if net_rx is not None else None,
+        net_tx_kbps=round(net_tx, 1) if net_tx is not None else None,
+        available=available,
     )

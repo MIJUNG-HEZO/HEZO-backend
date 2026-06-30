@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     p1_agent_endpoint: str | None = Field(default=None, alias="P1_AGENT_ENDPOINT")
     p1_agentcore_runtime_arn: str | None = Field(default=None, alias="P1_AGENTCORE_RUNTIME_ARN")
     p3_build_endpoint: str | None = Field(default=None, alias="P3_BUILD_ENDPOINT")
+    obs_prometheus_url: str = Field(default="", alias="OBS_PROMETHEUS_URL")
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
