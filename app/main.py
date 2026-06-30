@@ -10,6 +10,7 @@ from app.core.exceptions import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
+from app.core.otel import setup_otel
 
 
 def create_app() -> FastAPI:
@@ -21,6 +22,8 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
+
+    setup_otel(app)
 
     # 프론트엔드 연동을 위한 CORS 허용 출처는 환경변수로 관리한다.
     app.add_middleware(
