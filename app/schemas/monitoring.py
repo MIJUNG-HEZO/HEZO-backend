@@ -87,3 +87,12 @@ class CitationHistory(BaseModel):
     citation_history: list[CitationPoint]
     latest: LlmCitationRates | None = None
     query_count: int = 0
+
+
+class InfraMetrics(BaseModel):
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    disk_percent: float | None = None
+    net_rx_kbps: float | None = None
+    net_tx_kbps: float | None = None
+    available: bool = False
