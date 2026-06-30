@@ -454,11 +454,13 @@ def _load_score_history(site_id: str, days: int = 90) -> list[dict]:
             score_n = item.get("overall_score", {}).get("N")
             if score_n is None:
                 continue
+            geo_n = item.get("geo_file_score", {}).get("N")
             result.append({
                 "date": sk.replace("REPORT#", ""),
                 "score": int(float(score_n)),
                 "delta": int(float(item.get("delta", {}).get("N", "0"))),
                 "action_items_raw": item.get("action_items", {}).get("S", "[]"),
+                "geo_file_score": int(float(geo_n)) if geo_n is not None else None,
             })
         return result
     except Exception as e:
@@ -508,12 +510,17 @@ async def get_score_history(
     score_history = [ScorePoint(date=it["date"], score=it["score"], delta=it["delta"]) for it in items]
     latest = items[-1]
     action_items = _parse_action_items(latest["action_items_raw"])
+    geo_file_score = next(
+        (it["geo_file_score"] for it in reversed(items) if it.get("geo_file_score") is not None),
+        None,
+    )
 
     return ScoreHistory(
         score_history=score_history,
         latest_score=latest["score"],
         latest_delta=latest["delta"],
         action_items=action_items,
+        geo_file_score=geo_file_score,
     )
 
 

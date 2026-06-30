@@ -68,6 +68,7 @@ class ScoreHistory(BaseModel):
     latest_score: int | None = None
     latest_delta: int = 0
     action_items: list[ActionItem] = []
+    geo_file_score: int | None = None
 
 
 class LlmCitationRates(BaseModel):

@@ -69,6 +69,7 @@ class UserService:
             phone=model.phone,
             email_verified_at=model.email_verified_at,
             email_verified=model.email_verified_at is not None,
+            role=model.role,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )
