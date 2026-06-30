@@ -603,6 +603,11 @@ async def get_citation_history(
     )
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
 async def _query_prometheus(query: str) -> float | None:
     """Prometheus instant query → 첫 번째 결과값 반환. 실패 시 None."""
     url = settings.obs_prometheus_url
@@ -627,6 +632,8 @@ async def get_infra_metrics(
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
 ) -> InfraMetrics:
     """고객사 EC2 인프라 메트릭 (node_exporter → Prometheus)."""
+    if not _UUID_RE.match(site_id):
+        raise HTTPException(status_code=400, detail="유효하지 않은 site_id 형식입니다.")
     if not settings.obs_prometheus_url:
         return InfraMetrics(available=False)
 
