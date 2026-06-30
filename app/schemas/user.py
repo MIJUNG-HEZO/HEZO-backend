@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     phone: str | None
     email_verified_at: datetime | None
     email_verified: bool
+    role: str
     created_at: datetime
     updated_at: datetime
 
@@ -60,6 +61,7 @@ class UserModelResponse(BaseModel):
     name: str
     phone: str | None
     email_verified_at: datetime | None
+    role: str
     created_at: datetime
     updated_at: datetime
 
