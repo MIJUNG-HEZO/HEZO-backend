@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -862,3 +863,30 @@ def test_plan_policy_blocks_publish_when_limit_is_exceeded() -> None:
         assert exc_info.value.status_code == 403
 
     asyncio.run(run_policy_check())
+
+
+def test_start_pipeline_logs_execution_arn_and_site_id(caplog):
+    from app.api.v1 import sites as sites_module
+
+    fake_sfn = SimpleNamespace(
+        start_execution=lambda **kwargs: {
+            "executionArn": "arn:aws:states:ap-northeast-2:492554570964:execution:hezo-site-pipeline:s-test",
+            "startDate": datetime(2026, 7, 1, tzinfo=UTC),
+        }
+    )
+
+    with patch.object(sites_module, "_get_sfn_client", return_value=fake_sfn):
+        with caplog.at_level("INFO"):
+            result = sites_module._start_pipeline(
+                site_id="test-site-123",
+                template_type="wine-market",
+                template_category="landing",
+            )
+
+    assert result["execution_arn"].endswith("s-test")
+    matching = [
+        r for r in caplog.records
+        if getattr(r, "site_id", None) == "test-site-123"
+        and getattr(r, "execution_arn", "").endswith("s-test")
+    ]
+    assert len(matching) == 1
