@@ -22,6 +22,7 @@ dependencies = [
   "opentelemetry-distro>=0.50b0",
   "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
   "opentelemetry-instrumentation-fastapi>=0.50b0",
+  "python-json-logger>=4.1.0",
 ]
 
 [build-system]
