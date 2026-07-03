@@ -11,6 +11,7 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.otel import setup_otel
+from app.middleware.metrics import MetricsMiddleware
 
 
 def create_app() -> FastAPI:
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(MetricsMiddleware, cloudwatch_namespace="HEZO/Performance")
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     app.add_exception_handler(AppException, app_exception_handler)
