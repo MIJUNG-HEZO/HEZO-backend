@@ -24,6 +24,7 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.50b0",
   "python-json-logger>=4.1.0",
   "opentelemetry-instrumentation-sqlalchemy>=0.64b0",
+  "redis[asyncio]>=5.0.0",
 ]
 
 [build-system]
@@ -37,6 +38,7 @@ exclude = ["alembic*", "tests*"]
 [dependency-groups]
 dev = [
   "pytest>=8.3.0",
+  "pytest-asyncio>=1.4.0",
   "ruff>=0.9.0",
 ]
 
@@ -52,3 +54,4 @@ known-first-party = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
