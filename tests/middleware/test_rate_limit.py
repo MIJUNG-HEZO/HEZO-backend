@@ -82,3 +82,25 @@ def test_get_client_ip_falls_back_to_request_client_when_header_absent():
 def test_get_client_ip_returns_unknown_when_no_header_and_no_client():
     request = _make_request(headers=[], client_host=None)
     assert _get_client_ip(request) == "unknown"
+
+
+def test_middleware_builds_redis_key_from_leftmost_x_forwarded_for_entry(app_with_rate_limit):
+    # 미들웨어 __call__ 내부에서 _get_client_ip()의 반환값이 실제로
+    # Redis 키 생성에 쓰이는지 end-to-end로 검증한다 (헬퍼 단위 테스트만으로는
+    # __call__ 내부가 request.client.host로 되돌아가도 잡아내지 못함).
+    app, mock_client = app_with_rate_limit
+    mock_client.zadd = AsyncMock()
+    mock_client.zremrangebyscore = AsyncMock()
+    mock_client.zcard.return_value = 1  # limit 3 이하 — 통과
+    mock_client.expire = AsyncMock()
+
+    client = TestClient(app)
+    response = client.get(
+        "/ping",
+        headers={"X-Forwarded-For": "1.2.3.4, 10.0.0.5"},
+    )
+    assert response.status_code == 200
+
+    zadd_key = mock_client.zadd.call_args.args[0]
+    assert "hezo:rl:1.2.3.4" == zadd_key
+    assert "10.0.0.5" not in zadd_key
