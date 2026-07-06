@@ -1,11 +1,13 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
+import app.api.v1.plans as plans_module
 from app.api.deps import (
     CurrentUser,
     get_plan_policy_service,
@@ -50,6 +52,18 @@ class FakePlanService:
                 ),
             ]
         )
+
+
+class CountingFakePlanService(FakePlanService):
+    """list_active_plans 호출 횟수를 세는 FakePlanService — 캐시 히트 시
+    서비스(DB 조회)가 호출되지 않았음을 검증하기 위한 용도."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def list_active_plans(self) -> PlanListResponse:
+        self.call_count += 1
+        return await super().list_active_plans()
 
 
 class FakePlanPolicyService:
@@ -431,3 +445,99 @@ def test_plan_policy_publish_policy_raises_when_plan_is_missing() -> None:
         assert exc_info.value.status_code == 404
 
     asyncio.run(run_policy_check())
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Redis 캐시 레이어 (list_plans)
+# ---------------------------------------------------------------------------
+
+
+def test_list_plans_cache_hit_skips_service_call() -> None:
+    """redis_enabled=True + 캐시 히트 시 plan_service.list_active_plans()가
+    호출되지 않고(=DB 조회 스킵) 캐시된 값을 그대로 반환해야 한다."""
+    fake_plan_service = CountingFakePlanService()
+    cached_body = PlanListResponse(
+        items=[
+            SimpleNamespace(
+                code="CACHED",
+                name="Cached Plan",
+                price_monthly=1,
+                currency="KRW",
+                max_sites=1,
+                can_publish=True,
+            )
+        ]
+    ).model_dump_json()
+
+    fake_redis_client = AsyncMock()
+    fake_redis_client.get.return_value = cached_body
+
+    app.dependency_overrides[get_plan_service] = lambda: fake_plan_service
+
+    try:
+        with (
+            patch.object(plans_module.settings, "redis_enabled", True),
+            patch.object(plans_module, "get_redis_client", return_value=fake_redis_client),
+        ):
+            client = TestClient(app)
+            response = client.get("/api/v1/plans")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["code"] == "CACHED"
+    assert fake_plan_service.call_count == 0
+    fake_redis_client.get.assert_awaited_once_with(plans_module.PLANS_CACHE_KEY)
+    fake_redis_client.setex.assert_not_called()
+
+
+def test_list_plans_cache_miss_calls_service_and_populates_cache() -> None:
+    """redis_enabled=True + 캐시 미스 시 plan_service가 호출되고, 그 결과가
+    cache_set(setex)을 통해 캐시에 저장돼야 한다."""
+    fake_plan_service = CountingFakePlanService()
+
+    fake_redis_client = AsyncMock()
+    fake_redis_client.get.return_value = None
+
+    app.dependency_overrides[get_plan_service] = lambda: fake_plan_service
+
+    try:
+        with (
+            patch.object(plans_module.settings, "redis_enabled", True),
+            patch.object(plans_module, "get_redis_client", return_value=fake_redis_client),
+        ):
+            client = TestClient(app)
+            response = client.get("/api/v1/plans")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["code"] == "FREE"
+    assert fake_plan_service.call_count == 1
+    fake_redis_client.setex.assert_awaited_once()
+    setex_args = fake_redis_client.setex.await_args.args
+    assert setex_args[0] == plans_module.PLANS_CACHE_KEY
+    assert setex_args[1] == plans_module.PLANS_CACHE_TTL
+
+
+def test_list_plans_does_not_touch_redis_when_disabled() -> None:
+    """redis_enabled=False(기본값)이면 캐시 코드 경로가 완전히 스킵돼야 한다
+    (Redis 미가용 환경에서도 기존 동작이 그대로 유지됨을 보장)."""
+    fake_plan_service = CountingFakePlanService()
+    fake_redis_client = AsyncMock()
+
+    app.dependency_overrides[get_plan_service] = lambda: fake_plan_service
+
+    try:
+        with patch.object(plans_module, "get_redis_client", return_value=fake_redis_client):
+            client = TestClient(app)
+            response = client.get("/api/v1/plans")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert fake_plan_service.call_count == 1
+    fake_redis_client.get.assert_not_called()
+    fake_redis_client.setex.assert_not_called()

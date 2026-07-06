@@ -1,11 +1,13 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
+import app.api.v1.sites as sites_module
 from app.api.deps import (
     CurrentUser,
     get_site_service,
@@ -862,3 +864,267 @@ def test_plan_policy_blocks_publish_when_limit_is_exceeded() -> None:
         assert exc_info.value.status_code == 403
 
     asyncio.run(run_policy_check())
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Redis 캐시 레이어 (get_site / update_site / delete_site)
+# ---------------------------------------------------------------------------
+
+
+class FakeRedisStore:
+    """dict 기반 가짜 Redis 클라이언트 — get/setex/delete가 실제 캐시처럼
+    동작해서 캐시 히트/미스, 무효화, 사용자 간 키 격리를 검증할 수 있다."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.get_calls: list[str] = []
+        self.setex_calls: list[tuple[str, int, str]] = []
+        self.delete_calls: list[str] = []
+
+    async def get(self, key: str) -> str | None:
+        self.get_calls.append(key)
+        return self.store.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        self.setex_calls.append((key, ttl, value))
+        self.store[key] = value
+
+    async def delete(self, key: str) -> None:
+        self.delete_calls.append(key)
+        self.store.pop(key, None)
+
+
+class CountingFakeSiteService(FakeSiteService):
+    """get_site 호출 횟수와 매 호출의 (user_id, site_id)를 추적하는
+    FakeSiteService — 캐시 히트 시 서비스(=소유권 검증) 호출이 스킵됐는지,
+    반대로 다른 사용자 요청 시 스킵되지 않았는지 검증하기 위한 용도."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.get_site_call_count = 0
+        self.get_site_calls: list[tuple[UUID, UUID]] = []
+
+    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse:
+        self.get_site_call_count += 1
+        self.get_site_calls.append((user_id, site_id))
+        return await super().get_site(user_id=user_id, site_id=site_id)
+
+
+def test_get_site_cache_miss_calls_service_and_populates_cache() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = CountingFakeSiteService()
+    fake_redis = FakeRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    expected_key = sites_module._site_cache_key(str(site_id), str(current_user.id))
+
+    assert response.status_code == 200
+    assert fake_site_service.get_site_call_count == 1
+    assert fake_redis.get_calls == [expected_key]
+    assert len(fake_redis.setex_calls) == 1
+    assert fake_redis.setex_calls[0][0] == expected_key
+    assert fake_redis.setex_calls[0][1] == sites_module.SITE_CACHE_TTL
+    assert expected_key in fake_redis.store
+
+
+def test_get_site_cache_hit_skips_service_call() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = CountingFakeSiteService()
+    fake_redis = FakeRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            first = client.get(f"/api/v1/sites/{site_id}")
+            second = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    # 첫 요청은 캐시 미스(서비스 호출), 두 번째 요청은 캐시 히트(서비스 스킵)여야 한다.
+    assert fake_site_service.get_site_call_count == 1
+
+
+def test_get_site_cache_does_not_leak_between_different_users_for_same_site_id() -> None:
+    """보안 회귀 테스트.
+
+    site_id만으로 캐시 키를 만들면, 사용자 A의 요청으로 채워진 캐시를 다른
+    사용자 B가 같은 site_id를 요청했을 때 그대로 재생받아 소유권 검증
+    (site_service.get_site 내부의 get_active_site_by_id_and_owner)을 완전히
+    우회하는 인가 우회/데이터 유출이 발생한다.
+
+    이 테스트는 캐시 키에 user_id가 포함되어 있어 B의 요청이 A의 캐시를 절대
+    히트하지 않는다(=서비스가 B에 대해서도 반드시 다시 호출된다)는 것을 검증한다.
+    `_site_cache_key()`에서 user_id를 제거하면(=site_id만 사용) 이 테스트는
+    `get_site_call_count == 2` 단언에서 실패해야 한다."""
+    user_a = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    user_b = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = CountingFakeSiteService()
+    fake_redis = FakeRedisStore()
+
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+
+            app.dependency_overrides[require_authenticated] = lambda: user_a
+            response_a = client.get(f"/api/v1/sites/{site_id}")
+
+            app.dependency_overrides[require_authenticated] = lambda: user_b
+            response_b = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+
+    # 핵심 검증: 같은 site_id라도 사용자가 다르면 서비스(=소유권 검증)가 매번
+    # 다시 호출돼야 한다 — 캐시가 소유권 검증을 우회해선 절대 안 된다.
+    assert fake_site_service.get_site_call_count == 2
+    assert fake_site_service.get_site_calls == [
+        (user_a.id, site_id),
+        (user_b.id, site_id),
+    ]
+
+    key_a = sites_module._site_cache_key(str(site_id), str(user_a.id))
+    key_b = sites_module._site_cache_key(str(site_id), str(user_b.id))
+    assert key_a != key_b
+    assert key_a in fake_redis.store
+    assert key_b in fake_redis.store
+
+
+def test_get_site_does_not_touch_redis_when_disabled() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = CountingFakeSiteService()
+    fake_redis = FakeRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with patch.object(sites_module, "get_redis_client", return_value=fake_redis):
+            client = TestClient(app)
+            response = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert fake_site_service.get_site_call_count == 1
+    assert fake_redis.get_calls == []
+    assert fake_redis.setex_calls == []
+
+
+def test_update_site_invalidates_cache() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+    fake_redis = FakeRedisStore()
+    cache_key = sites_module._site_cache_key(str(site_id), str(current_user.id))
+    fake_redis.store[cache_key] = "stale-cached-value"
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.patch(
+                f"/api/v1/sites/{site_id}",
+                json={
+                    "name": "수정된 한의원",
+                    "site_type": "landing",
+                    "module_key": "medical",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert fake_redis.delete_calls == [cache_key]
+    assert cache_key not in fake_redis.store
+
+
+def test_delete_site_invalidates_cache() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+    fake_redis = FakeRedisStore()
+    cache_key = sites_module._site_cache_key(str(site_id), str(current_user.id))
+    fake_redis.store[cache_key] = "stale-cached-value"
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.delete(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert fake_redis.delete_calls == [cache_key]
+    assert cache_key not in fake_redis.store
+
+
+def test_update_and_delete_site_do_not_touch_redis_when_disabled() -> None:
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+    fake_redis = FakeRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with patch.object(sites_module, "get_redis_client", return_value=fake_redis):
+            client = TestClient(app)
+            patch_response = client.patch(
+                f"/api/v1/sites/{site_id}",
+                json={
+                    "name": "수정된 한의원",
+                    "site_type": "landing",
+                    "module_key": "medical",
+                },
+            )
+            delete_response = client.delete(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert patch_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert fake_redis.delete_calls == []
