@@ -11,6 +11,7 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.otel import setup_otel
+from app.middleware.rate_limit import RateLimitMiddleware
 
 
 def create_app() -> FastAPI:
@@ -33,6 +34,15 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Redis 활성화 시에만 IP당 슬라이딩 윈도우 Rate Limiting을 적용한다.
+    if settings.redis_enabled:
+        app.add_middleware(
+            RateLimitMiddleware,
+            redis_url=settings.redis_url,
+            limit=300,
+            window_seconds=60,
+        )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     app.add_exception_handler(AppException, app_exception_handler)
