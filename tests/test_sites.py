@@ -1128,3 +1128,30 @@ def test_update_and_delete_site_do_not_touch_redis_when_disabled() -> None:
     assert patch_response.status_code == 200
     assert delete_response.status_code == 204
     assert fake_redis.delete_calls == []
+
+
+def test_start_pipeline_logs_execution_arn_and_site_id(caplog):
+    from app.api.v1 import sites as sites_module
+
+    fake_sfn = SimpleNamespace(
+        start_execution=lambda **kwargs: {
+            "executionArn": "arn:aws:states:ap-northeast-2:492554570964:execution:hezo-site-pipeline:s-test",
+            "startDate": datetime(2026, 7, 1, tzinfo=UTC),
+        }
+    )
+
+    with patch.object(sites_module, "_get_sfn_client", return_value=fake_sfn):
+        with caplog.at_level("INFO"):
+            result = sites_module._start_pipeline(
+                site_id="test-site-123",
+                template_type="wine-market",
+                template_category="landing",
+            )
+
+    assert result["execution_arn"].endswith("s-test")
+    matching = [
+        r for r in caplog.records
+        if getattr(r, "site_id", None) == "test-site-123"
+        and getattr(r, "execution_arn", "").endswith("s-test")
+    ]
+    assert len(matching) == 1
