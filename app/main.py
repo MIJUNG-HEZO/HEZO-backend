@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry import trace as otel_trace
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ASGIApp
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -10,7 +15,23 @@ from app.core.exceptions import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
+from app.core.logging import configure_json_logging, trace_id_var
 from app.core.otel import setup_otel
+
+
+class TraceIdMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        span = otel_trace.get_current_span()
+        span_context = span.get_span_context()
+        trace_id = format(span_context.trace_id, "032x") if span_context.is_valid else ""
+        token = trace_id_var.set(trace_id)
+        try:
+            return await call_next(request)
+        finally:
+            trace_id_var.reset(token)
 
 
 def create_app() -> FastAPI:
@@ -24,6 +45,9 @@ def create_app() -> FastAPI:
     )
 
     setup_otel(app)
+    configure_json_logging()
+
+    app.add_middleware(TraceIdMiddleware)
 
     # 프론트엔드 연동을 위한 CORS 허용 출처는 환경변수로 관리한다.
     app.add_middleware(

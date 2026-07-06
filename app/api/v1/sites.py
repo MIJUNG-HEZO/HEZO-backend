@@ -12,6 +12,7 @@ import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, status
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -135,8 +136,17 @@ def _start_pipeline(site_id: str, template_type: str, template_category: str) ->
         name=execution_name,
         input=input_payload,
     )
+    execution_arn = resp["executionArn"]
+
+    current_span = trace.get_current_span()
+    current_span.set_attribute("step_functions.execution_arn", execution_arn)
+    logger.info(
+        "Step Functions 파이프라인 실행 시작",
+        extra={"site_id": site_id, "execution_arn": execution_arn},
+    )
+
     return {
-        "execution_arn": resp["executionArn"],
+        "execution_arn": execution_arn,
         "status": "running",
         "started_at": resp["startDate"].isoformat(),
     }
