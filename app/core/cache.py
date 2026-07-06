@@ -14,10 +14,16 @@ def get_redis_client() -> redis.asyncio.Redis:
     """전역 async Redis 클라이언트를 반환한다 (lazy singleton)."""
     global _redis_client
     if _redis_client is None:
+        # 연결/응답 타임아웃을 짧게 잡아, Redis 장애 시 cache_get_with_fallback()의
+        # DB 폴백이 요청마다 수 초씩 멈추지 않고 빠르게 넘어가도록 한다
+        # (기본 타임아웃은 OS 소켓 타임아웃까지 기다려 8초 가까이 지연될 수 있음 —
+        # 리뷰에서 실측으로 확인된 문제).
         _redis_client = redis.asyncio.from_url(
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
         )
     return _redis_client
 
