@@ -17,6 +17,7 @@ from app.core.exceptions import (
 )
 from app.core.logging import configure_json_logging, trace_id_var
 from app.core.otel import setup_otel
+from app.middleware.metrics import MetricsMiddleware
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(MetricsMiddleware, cloudwatch_namespace="HEZO/Performance")
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     app.add_exception_handler(AppException, app_exception_handler)
