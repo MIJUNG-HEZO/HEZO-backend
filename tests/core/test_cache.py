@@ -47,3 +47,34 @@ async def test_cache_delete_calls_delete():
         from app.core.cache import cache_delete
         await cache_delete(mock_client, "hezo:plans")
         mock_client.delete.assert_called_once_with("hezo:plans")
+
+
+# ---------------------------------------------------------------------------
+# Task 8-B: Redis Graceful Degradation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_get_with_fallback_on_redis_error():
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = Exception("Redis connection refused")
+
+    async def fallback():
+        return "fallback_value"
+
+    from app.core.cache import cache_get_with_fallback
+    result = await cache_get_with_fallback(mock_client, "hezo:key", fallback)
+    assert result == "fallback_value"
+
+
+@pytest.mark.asyncio
+async def test_cache_get_with_fallback_uses_cache_on_hit():
+    mock_client = AsyncMock()
+    mock_client.get.return_value = "cached_value"
+
+    async def fallback():
+        return "fallback_value"
+
+    from app.core.cache import cache_get_with_fallback
+    result = await cache_get_with_fallback(mock_client, "hezo:key", fallback)
+    assert result == "cached_value"

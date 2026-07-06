@@ -541,3 +541,63 @@ def test_list_plans_does_not_touch_redis_when_disabled() -> None:
     assert fake_plan_service.call_count == 1
     fake_redis_client.get.assert_not_called()
     fake_redis_client.setex.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 8-B: Redis Graceful Degradation (list_plans)
+# ---------------------------------------------------------------------------
+
+
+def test_list_plans_falls_back_to_db_when_redis_get_raises() -> None:
+    """Redis client.get()이 예외를 던져도(연결 장애 등) 500이 아니라
+    DB 조회 결과로 정상 응답해야 한다 — Redis 장애가 요청 실패로 전파되면
+    안 된다는 것이 이 태스크의 핵심 목표다."""
+    fake_plan_service = CountingFakePlanService()
+
+    fake_redis_client = AsyncMock()
+    fake_redis_client.get.side_effect = Exception("Redis connection refused")
+
+    app.dependency_overrides[get_plan_service] = lambda: fake_plan_service
+
+    try:
+        with (
+            patch.object(plans_module.settings, "redis_enabled", True),
+            patch.object(plans_module, "get_redis_client", return_value=fake_redis_client),
+        ):
+            client = TestClient(app)
+            response = client.get("/api/v1/plans")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["code"] == "FREE"
+    assert fake_plan_service.call_count == 1
+
+
+def test_list_plans_returns_200_when_cache_write_fails_after_fallback() -> None:
+    """캐시 미스로 DB 폴백까지 갔는데, 그 결과를 캐시에 쓰는 setex마저
+    실패해도(예: Redis가 읽기는 되지만 쓰기 타임아웃 등) 응답은 여전히
+    200이어야 한다 — 캐시 쓰기 실패가 요청 성공 여부에 영향을 주면 안 된다."""
+    fake_plan_service = CountingFakePlanService()
+
+    fake_redis_client = AsyncMock()
+    fake_redis_client.get.return_value = None
+    fake_redis_client.setex.side_effect = Exception("Redis write timeout")
+
+    app.dependency_overrides[get_plan_service] = lambda: fake_plan_service
+
+    try:
+        with (
+            patch.object(plans_module.settings, "redis_enabled", True),
+            patch.object(plans_module, "get_redis_client", return_value=fake_redis_client),
+        ):
+            client = TestClient(app)
+            response = client.get("/api/v1/plans")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["code"] == "FREE"
+    assert fake_plan_service.call_count == 1

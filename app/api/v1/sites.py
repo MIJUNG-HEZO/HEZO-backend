@@ -20,7 +20,7 @@ from app.api.deps import (
     require_authenticated,
     require_email_verified,
 )
-from app.core.cache import cache_delete, cache_get, cache_set, get_redis_client
+from app.core.cache import cache_delete, cache_get_with_fallback, cache_set, get_redis_client
 from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.site import (
@@ -636,18 +636,24 @@ async def get_site(
     # 캐시가 소유권 검증(site_service.get_site)을 우회해 재생되지 않도록 한다.
     cache_key = _site_cache_key(str(site_id), str(current_user.id))
 
-    if settings.redis_enabled:
-        redis_client = get_redis_client()
-        cached = await cache_get(redis_client, cache_key)
-        if cached:
-            return SiteResponse.model_validate_json(cached)
+    if not settings.redis_enabled:
+        return await site_service.get_site(user_id=current_user.id, site_id=site_id)
 
-    result = await site_service.get_site(user_id=current_user.id, site_id=site_id)
+    redis_client = get_redis_client()
 
-    if settings.redis_enabled:
-        await cache_set(redis_client, cache_key, result.model_dump_json(), SITE_CACHE_TTL)
+    async def fetch_from_db() -> str:
+        # Redis 장애로 이 fallback이 호출되더라도, 소유권 검증(get_site 내부의
+        # get_active_site_by_id_and_owner)은 캐시 히트/미스와 무관하게 항상
+        # 실행된다 — 캐시는 결과를 재사용할 뿐 검증을 우회하지 않는다.
+        result = await site_service.get_site(user_id=current_user.id, site_id=site_id)
+        try:
+            await cache_set(redis_client, cache_key, result.model_dump_json(), SITE_CACHE_TTL)
+        except Exception:
+            pass  # 캐시 저장 실패는 무시 — DB 조회 결과 반환은 계속 진행
+        return result.model_dump_json()
 
-    return result
+    raw = await cache_get_with_fallback(redis_client, cache_key, fetch_from_db)
+    return SiteResponse.model_validate_json(raw)
 
 
 @router.patch("/{site_id}", response_model=SiteResponse)
@@ -664,7 +670,14 @@ async def update_site(
     )
 
     if settings.redis_enabled:
-        await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
+        try:
+            await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
+        except Exception as e:
+            # 캐시 무효화 실패가 이미 성공한 DB 변경(위 update_site)의 응답을
+            # 망가뜨려서는 안 된다 — 경고만 남기고 응답은 정상적으로 반환한다.
+            # (부작용: Redis가 복구될 때까지 최대 SITE_CACHE_TTL만큼 stale 캐시가
+            # 남을 수 있으나, 요청 실패보다 훨씬 나은 트레이드오프)
+            logger.warning("update_site: 캐시 무효화 실패 site=%s: %s", site_id, e)
 
     return result
 
@@ -678,7 +691,12 @@ async def delete_site(
     await site_service.delete_site(user_id=current_user.id, site_id=site_id)
 
     if settings.redis_enabled:
-        await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
+        try:
+            await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
+        except Exception as e:
+            # update_site와 동일한 이유로 무효화 실패를 삼킨다 — 사이트는 이미
+            # DB에서 삭제됐으므로 캐시 무효화 실패로 204 응답을 막을 이유가 없다.
+            logger.warning("delete_site: 캐시 무효화 실패 site=%s: %s", site_id, e)
 
 
 # ---------------------------------------------------------------------------

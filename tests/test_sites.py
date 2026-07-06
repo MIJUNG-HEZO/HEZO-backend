@@ -1128,3 +1128,113 @@ def test_update_and_delete_site_do_not_touch_redis_when_disabled() -> None:
     assert patch_response.status_code == 200
     assert delete_response.status_code == 204
     assert fake_redis.delete_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Task 8-B: Redis Graceful Degradation (get_site / update_site / delete_site)
+# ---------------------------------------------------------------------------
+
+
+class RaisingRedisStore(FakeRedisStore):
+    """get/setex/delete 전부가 예외를 던지는 가짜 Redis — 완전히 죽은
+    Redis(연결 거부 등)를 시뮬레이션한다."""
+
+    async def get(self, key: str) -> str | None:
+        raise ConnectionError("Redis connection refused")
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        raise ConnectionError("Redis connection refused")
+
+    async def delete(self, key: str) -> None:
+        raise ConnectionError("Redis connection refused")
+
+
+def test_get_site_falls_back_to_db_when_redis_is_down() -> None:
+    """Redis get/setex가 모두 예외를 던져도 get_site는 500이 아니라 200으로
+    응답해야 하고, 소유권 검증(site_service.get_site)은 여전히 정상 실행돼야
+    한다 — 캐시 장애가 조회 자체나 소유권 검증을 막아서는 안 된다."""
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = CountingFakeSiteService()
+    fake_redis = RaisingRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.get(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(site_id)
+    assert fake_site_service.get_site_call_count == 1
+    assert fake_site_service.get_site_calls == [(current_user.id, site_id)]
+
+
+def test_update_site_succeeds_when_cache_invalidation_raises() -> None:
+    """update_site는 DB 변경(site_service.update_site)이 이미 성공했으므로,
+    그 뒤에 실행되는 cache_delete가 Redis 장애로 예외를 던지더라도 200과
+    변경된 데이터를 그대로 반환해야 한다 — 캐시 무효화 실패가 이미 커밋된
+    DB 변경의 응답을 500으로 뒤집으면 안 된다."""
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+    fake_redis = RaisingRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.patch(
+                f"/api/v1/sites/{site_id}",
+                json={
+                    "name": "수정된 한의원",
+                    "site_type": "landing",
+                    "module_key": "medical",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(site_id)
+    assert body["name"] == "수정된 한의원"
+    assert fake_site_service.requested_site_id == site_id
+
+
+def test_delete_site_succeeds_when_cache_invalidation_raises() -> None:
+    """delete_site도 update_site와 동일한 이유로, DB 삭제가 이미 성공한
+    이상 cache_delete의 Redis 장애가 204 응답을 막아서는 안 된다."""
+    current_user = CurrentUser(id=uuid4(), email_verified_at=datetime.now(UTC))
+    site_id = uuid4()
+    fake_site_service = FakeSiteService()
+    fake_redis = RaisingRedisStore()
+
+    app.dependency_overrides[require_authenticated] = lambda: current_user
+    app.dependency_overrides[get_site_service] = lambda: fake_site_service
+
+    try:
+        with (
+            patch.object(sites_module.settings, "redis_enabled", True),
+            patch.object(sites_module, "get_redis_client", return_value=fake_redis),
+        ):
+            client = TestClient(app)
+            response = client.delete(f"/api/v1/sites/{site_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert fake_site_service.requested_site_id == site_id
