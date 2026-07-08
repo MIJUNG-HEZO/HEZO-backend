@@ -21,6 +21,7 @@ from app.api.deps import (
     require_authenticated,
     require_email_verified,
 )
+from app.core.cache import cache_delete, cache_get, cache_set, get_redis_client
 from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.site import (
@@ -42,6 +43,20 @@ _STEP_FUNCTIONS_ARN = os.environ.get("STEP_FUNCTIONS_ARN", "")         # hezo_pi
 _ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "hezo-artifacts")
 _PIPELINE_TABLE = os.environ.get("PIPELINE_TABLE", "hezo_pipeline_state")
 _AWS_ENABLED = bool(_STEP_FUNCTIONS_ARN)                                # ARN 있으면 AWS 모드
+
+# ---------------------------------------------------------------------------
+# Redis 캐시 설정 — GET /sites/{site_id} 응답 캐시 (Task 5)
+# ---------------------------------------------------------------------------
+SITE_CACHE_TTL = 120  # 2분
+
+
+def _site_cache_key(site_id: str, user_id: str) -> str:
+    """사이트 캐시 키 — site_id만으로 키를 만들면 소유자가 다른 두 사용자가 같은
+    site_id를 요청했을 때 캐시가 소유권 검증(site_service.get_site 내부)을 건너뛰고
+    먼저 캐시를 채운 사용자의 응답을 그대로 재생(replay)할 위험이 있다.
+    user_id를 키에 포함시켜, 캐시가 채워질 때 이미 소유권 검증을 통과한 바로 그 사용자
+    에게만 재생되도록 강제한다 (사용자 간 캐시 교차 조회/데이터 유출 차단)."""
+    return f"hezo:site:{site_id}:{user_id}"
 
 
 def _get_sfn_client():
@@ -656,7 +671,22 @@ async def get_site(
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteResponse:
-    return await site_service.get_site(user_id=current_user.id, site_id=site_id)
+    # 캐시 키에 user_id를 포함시켜, 다른 사용자가 동일 site_id를 요청해도
+    # 캐시가 소유권 검증(site_service.get_site)을 우회해 재생되지 않도록 한다.
+    cache_key = _site_cache_key(str(site_id), str(current_user.id))
+
+    if settings.redis_enabled:
+        redis_client = get_redis_client()
+        cached = await cache_get(redis_client, cache_key)
+        if cached:
+            return SiteResponse.model_validate_json(cached)
+
+    result = await site_service.get_site(user_id=current_user.id, site_id=site_id)
+
+    if settings.redis_enabled:
+        await cache_set(redis_client, cache_key, result.model_dump_json(), SITE_CACHE_TTL)
+
+    return result
 
 
 @router.patch("/{site_id}", response_model=SiteResponse)
@@ -666,11 +696,16 @@ async def update_site(
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> SiteResponse:
-    return await site_service.update_site(
+    result = await site_service.update_site(
         user_id=current_user.id,
         site_id=site_id,
         payload=payload,
     )
+
+    if settings.redis_enabled:
+        await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
+
+    return result
 
 
 @router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -680,6 +715,9 @@ async def delete_site(
     site_service: Annotated[SiteService, Depends(get_site_service)],
 ) -> None:
     await site_service.delete_site(user_id=current_user.id, site_id=site_id)
+
+    if settings.redis_enabled:
+        await cache_delete(get_redis_client(), _site_cache_key(str(site_id), str(current_user.id)))
 
 
 # ---------------------------------------------------------------------------
