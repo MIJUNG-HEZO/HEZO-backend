@@ -12,7 +12,7 @@ aws application-autoscaling register-scalable-target \
   --resource-id "service/$CLUSTER/$SERVICE" \
   --scalable-dimension ecs:service:DesiredCount \
   --min-capacity 1 \
-  --max-capacity 5 \
+  --max-capacity 10 \
   --region $REGION
 
 # 스케일 아웃: ALBRequestCountPerTarget >= 200
