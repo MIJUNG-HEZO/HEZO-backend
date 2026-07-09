@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,11 @@ class SiteUpdateRequest(BaseModel):
     module_key: ModuleKey
 
     model_config = ConfigDict(extra="forbid")
+
+
+class SiteCreateAcceptedResponse(BaseModel):
+    id: UUID
+    status: Literal["queued"]
 
 
 class SiteResponse(BaseModel):
