@@ -78,8 +78,28 @@ async def run() -> None:
             continue
 
         for message in resp.get("Messages", []):
-            body = json.loads(message["Body"])
-            site_id = body.get("site_id")
+            try:
+                body = json.loads(message["Body"])
+                site_id = body["site_id"]
+                UUID(site_id)
+                UUID(body["owner_id"])
+                SiteType(body["site_type"])
+                ModuleKey(body["module_key"])
+            except (KeyError, ValueError, TypeError) as exc:
+                # 영구적으로 처리 불가능한 메시지(잘못된 JSON/UUID/enum) — 재시도해도
+                # 절대 성공하지 못하므로 크래시루프를 막기 위해 삭제하고 다음 메시지로.
+                logger.error(
+                    "메시지 파싱 실패, 재시도 불가로 판단해 삭제: body=%s %s",
+                    message.get("Body"),
+                    exc,
+                )
+                await asyncio.to_thread(
+                    client.delete_message,
+                    QueueUrl=_SQS_SITE_QUEUE_URL,
+                    ReceiptHandle=message["ReceiptHandle"],
+                )
+                continue
+
             try:
                 await _create_site_from_message(body)
             except pybreaker.CircuitBreakerError:
