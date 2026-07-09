@@ -56,24 +56,25 @@ async def test_create_site_falls_back_to_sync_insert_when_publish_fails(monkeypa
         service.plan_policy_service, "require_can_create_site", _require_can_create_site,
     )
 
-    fake_site = type(
-        "FakeSite",
-        (),
-        {
-            "id": uuid4(),
-            "name": "강남 한의원",
-            "site_type": "landing",
-            "module_key": "medical",
-            "status": "draft",
-            "is_published": False,
-            "published_at": None,
-            "created_at": datetime(2026, 6, 7, tzinfo=UTC),
-            "updated_at": datetime(2026, 6, 7, tzinfo=UTC),
-        },
-    )()
+    captured_create_kwargs: dict = {}
 
     async def _create(**kwargs):
-        return fake_site
+        captured_create_kwargs.update(kwargs)
+        return type(
+            "FakeSite",
+            (),
+            {
+                "id": kwargs["id"],
+                "name": kwargs["name"],
+                "site_type": kwargs["site_type"],
+                "module_key": kwargs["module_key"],
+                "status": "draft",
+                "is_published": False,
+                "published_at": None,
+                "created_at": datetime(2026, 6, 7, tzinfo=UTC),
+                "updated_at": datetime(2026, 6, 7, tzinfo=UTC),
+            },
+        )()
 
     monkeypatch.setattr(service.site_repository, "create", _create)
 
@@ -82,6 +83,9 @@ async def test_create_site_falls_back_to_sync_insert_when_publish_fails(monkeypa
 
     assert isinstance(result, SiteResponse)
     assert result.name == "강남 한의원"
+    # 폴백 경로에서도 발행 시도 때 생성한 site_id가 그대로 insert에 쓰였어야 함
+    # (큐잉 경로와 동일한 identity 보장 — 이 플랜 설계의 핵심 불변조건)
+    assert captured_create_kwargs["id"] == result.id
     # 발행은 시도됐지만(실패) DynamoDB 추적 기록은 안 남아야 함(폴백 경로는 큐 상태가 아니므로)
     record = await tracker.get_record(site_id=result.id)
     assert record is None
