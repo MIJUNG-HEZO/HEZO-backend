@@ -25,6 +25,7 @@ dependencies = [
   "python-json-logger>=4.1.0",
   "opentelemetry-instrumentation-sqlalchemy>=0.64b0",
   "redis[asyncio]>=5.0.0",
+  "pybreaker>=1.2.0",
 ]
 
 [build-system]
