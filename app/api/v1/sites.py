@@ -651,12 +651,12 @@ async def get_site_contract(
     return _build_contract(str(site_id))
 
 
-@router.get("/{site_id}", response_model=SiteResponse)
+@router.get("/{site_id}", response_model=SiteResponse | SiteCreateAcceptedResponse)
 async def get_site(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
-) -> SiteResponse:
+) -> SiteResponse | SiteCreateAcceptedResponse:
     return await site_service.get_site(user_id=current_user.id, site_id=site_id)
 
 

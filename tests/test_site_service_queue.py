@@ -89,3 +89,53 @@ async def test_create_site_falls_back_to_sync_insert_when_publish_fails(monkeypa
     # 발행은 시도됐지만(실패) DynamoDB 추적 기록은 안 남아야 함(폴백 경로는 큐 상태가 아니므로)
     record = await tracker.get_record(site_id=result.id)
     assert record is None
+
+
+@pytest.mark.asyncio
+async def test_get_site_returns_queued_status_when_not_yet_in_aurora(monkeypatch) -> None:
+    publisher = FakeSiteQueuePublisher(should_succeed=True)
+    tracker = FakeSiteQueueTracker()
+    service = _make_service(publisher=publisher, tracker=tracker)
+
+    user_id = uuid4()
+    site_id = uuid4()
+    await tracker.mark_queued(site_id=site_id, owner_id=user_id)
+
+    async def _get_active_site(**kwargs):
+        return None
+
+    monkeypatch.setattr(
+        service.site_repository, "get_active_site_by_id_and_owner", _get_active_site,
+    )
+
+    result = await service.get_site(user_id=user_id, site_id=site_id)
+
+    assert isinstance(result, SiteCreateAcceptedResponse)
+    assert result.id == site_id
+    assert result.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_get_site_does_not_leak_other_owners_queued_status(monkeypatch) -> None:
+    publisher = FakeSiteQueuePublisher(should_succeed=True)
+    tracker = FakeSiteQueueTracker()
+    service = _make_service(publisher=publisher, tracker=tracker)
+
+    owner_id = uuid4()
+    other_user_id = uuid4()
+    site_id = uuid4()
+    await tracker.mark_queued(site_id=site_id, owner_id=owner_id)
+
+    async def _get_active_site(**kwargs):
+        return None
+
+    monkeypatch.setattr(
+        service.site_repository, "get_active_site_by_id_and_owner", _get_active_site,
+    )
+
+    from app.core.exceptions import AppException
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_site(user_id=other_user_id, site_id=site_id)
+
+    assert exc_info.value.status_code == 404

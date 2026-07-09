@@ -102,19 +102,23 @@ class SiteService:
         items = [SiteResponse.model_validate(site) for site in sites]
         return SiteListResponse(items=items, total=len(items))
 
-    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse:
+    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse | SiteCreateAcceptedResponse:
         site = await self.site_repository.get_active_site_by_id_and_owner(
             site_id=site_id,
             owner_id=user_id,
         )
-        if site is None:
-            raise AppException(
-                code=error_codes.SITE_NOT_FOUND,
-                message="Site was not found.",
-                status_code=404,
-            )
+        if site is not None:
+            return SiteResponse.model_validate(site)
 
-        return SiteResponse.model_validate(site)
+        record = await self.queue_tracker.get_record(site_id=site_id)
+        if record is not None and record["owner_id"] == user_id and record["status"] == "queued":
+            return SiteCreateAcceptedResponse(id=site_id, status="queued")
+
+        raise AppException(
+            code=error_codes.SITE_NOT_FOUND,
+            message="Site was not found.",
+            status_code=404,
+        )
 
     async def update_site(
         self,
