@@ -1098,7 +1098,11 @@ async def get_pipeline_status(
     return _PipelineStatusResponse(**result)
 
 
-@router.post("", response_model=SiteResponse | SiteCreateAcceptedResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=SiteResponse | SiteCreateAcceptedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_site(
     payload: SiteCreateRequest,
     current_user: Annotated[CurrentUser, Depends(require_email_verified)],
