@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class SiteStatus(StrEnum):
+    QUEUED = "queued"
     DRAFT = "draft"
     ARCHIVED = "archived"
     DELETED = "deleted"
