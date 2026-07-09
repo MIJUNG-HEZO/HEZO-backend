@@ -1,5 +1,4 @@
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,7 +48,16 @@ async def test_list_active_plans_uses_cache_hit_when_available(monkeypatch) -> N
     service = PlanService(session)
 
     cached_response = PlanListResponse(
-        items=[PlanResponse(code="CACHED", name="Cached", price_monthly=0, currency="KRW", max_sites=1, can_publish=False)]
+        items=[
+            PlanResponse(
+                code="CACHED",
+                name="Cached",
+                price_monthly=0,
+                currency="KRW",
+                max_sites=1,
+                can_publish=False,
+            )
+        ]
     )
 
     async def _get_cached_plans():

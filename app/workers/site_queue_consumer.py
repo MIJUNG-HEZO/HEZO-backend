@@ -16,9 +16,11 @@ from uuid import UUID
 
 import pybreaker
 from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.core.circuit_breakers import aurora_site_insert_breaker
 from app.core.enums import ModuleKey, SiteType
+from app.core.site_queue_tracker import DynamoSiteQueueTracker
 from app.db.session import AsyncSessionLocal
 from app.repositories.site_repository import SiteRepository
 
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 _SQS_SITE_QUEUE_URL = os.environ.get("SQS_SITE_QUEUE_URL", "")
 _POLL_WAIT_SECONDS = 20  # SQS 롱폴링 최대값
+
+_queue_tracker = DynamoSiteQueueTracker()
 
 _running = True
 
@@ -107,6 +111,31 @@ async def run() -> None:
                     "Aurora 서킷 open — 메시지 삭제 안 함(재시도 대기): site_id=%s", site_id
                 )
                 continue
+            except IntegrityError:
+                # SQS는 at-least-once 배달이라 같은 site_id가 중복 수신될 수 있다.
+                # 이미 삽입된 상태이므로 재시도해도 항상 같은 에러만 반복된다 —
+                # 처리 완료로 간주하고 메시지를 삭제한다(크래시루프 방지).
+                logger.info(
+                    "중복 배달 감지(site_id 이미 존재) — 처리 완료로 간주하고 삭제: site_id=%s",
+                    site_id,
+                )
+                await _queue_tracker.delete_record(site_id=UUID(site_id))
+                await asyncio.to_thread(
+                    client.delete_message,
+                    QueueUrl=_SQS_SITE_QUEUE_URL,
+                    ReceiptHandle=message["ReceiptHandle"],
+                )
+                continue
+            except SQLAlchemyError as exc:
+                # Aurora 자체 장애(타임아웃 등, boto 예외가 아님) — 메시지를 삭제하지
+                # 않고 SQS visibility timeout 이후 재시도되도록 둔다. 이 예외가
+                # 연속 5회 누적되면 aurora_site_insert_breaker가 open된다.
+                logger.warning(
+                    "사이트 insert 실패(DB 오류) — 메시지 삭제 안 함(재시도 대기): site_id=%s %s",
+                    site_id,
+                    exc,
+                )
+                continue
             except (BotoCoreError, ClientError) as exc:
                 logger.warning(
                     "사이트 insert 실패 — 메시지 삭제 안 함(재시도 대기): site_id=%s %s",
@@ -115,6 +144,7 @@ async def run() -> None:
                 )
                 continue
 
+            await _queue_tracker.delete_record(site_id=UUID(site_id))
             await asyncio.to_thread(
                 client.delete_message,
                 QueueUrl=_SQS_SITE_QUEUE_URL,

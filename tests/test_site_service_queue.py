@@ -1,9 +1,9 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
-from unittest.mock import AsyncMock
 
 from app.core.site_queue_publisher import FakeSiteQueuePublisher
 from app.core.site_queue_tracker import FakeSiteQueueTracker
@@ -11,7 +11,9 @@ from app.schemas.site import SiteCreateAcceptedResponse, SiteCreateRequest, Site
 from app.services.site_service import SiteService
 
 
-def _make_service(*, publisher: FakeSiteQueuePublisher, tracker: FakeSiteQueueTracker) -> SiteService:
+def _make_service(
+    *, publisher: FakeSiteQueuePublisher, tracker: FakeSiteQueueTracker
+) -> SiteService:
     session = AsyncMock(spec=AsyncSession)
     service = SiteService(session, queue_publisher=publisher, queue_tracker=tracker)
     return service

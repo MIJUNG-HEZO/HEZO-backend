@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import error_codes
 from app.core.exceptions import AppException
 from app.core.site_queue_publisher import SiteQueuePublisher, SqsSiteQueuePublisher
-from app.core.site_queue_tracker import SiteQueueTracker, DynamoSiteQueueTracker
+from app.core.site_queue_tracker import DynamoSiteQueueTracker, SiteQueueTracker
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.site_repository import SiteRepository
 from app.repositories.subscription_repository import SubscriptionRepository
@@ -102,7 +102,9 @@ class SiteService:
         items = [SiteResponse.model_validate(site) for site in sites]
         return SiteListResponse(items=items, total=len(items))
 
-    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse | SiteCreateAcceptedResponse:
+    async def get_site(
+        self, *, user_id: UUID, site_id: UUID
+    ) -> SiteResponse | SiteCreateAcceptedResponse:
         site = await self.site_repository.get_active_site_by_id_and_owner(
             site_id=site_id,
             owner_id=user_id,
