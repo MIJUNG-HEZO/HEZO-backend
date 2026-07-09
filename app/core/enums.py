@@ -2,6 +2,9 @@ from enum import StrEnum
 
 
 class SiteStatus(StrEnum):
+    # DynamoDB 큐 추적 레코드 + API 응답(SiteCreateAcceptedResponse)에서만 쓰인다.
+    # Postgres site_status enum 타입은 create_type=False라 이 값을 모른다 —
+    # Site.status 컬럼에 절대 저장하지 말 것(먼저 ALTER TYPE 마이그레이션 필요).
     QUEUED = "queued"
     DRAFT = "draft"
     ARCHIVED = "archived"
