@@ -1,15 +1,18 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import error_codes
 from app.core.exceptions import AppException
+from app.core.site_queue_publisher import SiteQueuePublisher, SqsSiteQueuePublisher
+from app.core.site_queue_tracker import DynamoSiteQueueTracker, SiteQueueTracker
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.site_repository import SiteRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.schemas.site import (
     VALID_SITE_MODULE_PAIRS,
+    SiteCreateAcceptedResponse,
     SiteCreateRequest,
     SiteListResponse,
     SitePublishAvailabilityResponse,
@@ -20,7 +23,13 @@ from app.services.plan_policy_service import PlanPolicyService
 
 
 class SiteService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        queue_publisher: SiteQueuePublisher | None = None,
+        queue_tracker: SiteQueueTracker | None = None,
+    ) -> None:
         self.session = session
         self.site_repository = SiteRepository(session)
         self.plan_policy_service = PlanPolicyService(
@@ -28,6 +37,8 @@ class SiteService:
             subscription_repository=SubscriptionRepository(session),
             site_repository=self.site_repository,
         )
+        self.queue_publisher = queue_publisher or SqsSiteQueuePublisher()
+        self.queue_tracker = queue_tracker or DynamoSiteQueueTracker()
 
     async def create_site(
         self,
@@ -35,7 +46,7 @@ class SiteService:
         user_id: UUID,
         email_verified: bool,
         payload: SiteCreateRequest,
-    ) -> SiteResponse:
+    ) -> SiteResponse | SiteCreateAcceptedResponse:
         if not email_verified:
             raise AppException(
                 code=error_codes.EMAIL_NOT_VERIFIED,
@@ -58,8 +69,21 @@ class SiteService:
 
         await self.plan_policy_service.require_can_create_site(user_id)
 
+        site_id = uuid4()
+        published = await self.queue_publisher.publish(
+            site_id=site_id,
+            owner_id=user_id,
+            name=payload.name,
+            site_type=payload.site_type,
+            module_key=payload.module_key,
+        )
+        if published:
+            await self.queue_tracker.mark_queued(site_id=site_id, owner_id=user_id)
+            return SiteCreateAcceptedResponse(id=site_id, status="queued")
+
         try:
             site = await self.site_repository.create(
+                id=site_id,
                 owner_id=user_id,
                 name=payload.name,
                 site_type=payload.site_type,
@@ -78,19 +102,25 @@ class SiteService:
         items = [SiteResponse.model_validate(site) for site in sites]
         return SiteListResponse(items=items, total=len(items))
 
-    async def get_site(self, *, user_id: UUID, site_id: UUID) -> SiteResponse:
+    async def get_site(
+        self, *, user_id: UUID, site_id: UUID
+    ) -> SiteResponse | SiteCreateAcceptedResponse:
         site = await self.site_repository.get_active_site_by_id_and_owner(
             site_id=site_id,
             owner_id=user_id,
         )
-        if site is None:
-            raise AppException(
-                code=error_codes.SITE_NOT_FOUND,
-                message="Site was not found.",
-                status_code=404,
-            )
+        if site is not None:
+            return SiteResponse.model_validate(site)
 
-        return SiteResponse.model_validate(site)
+        record = await self.queue_tracker.get_record(site_id=site_id)
+        if record is not None and record["owner_id"] == user_id and record["status"] == "queued":
+            return SiteCreateAcceptedResponse(id=site_id, status="queued")
+
+        raise AppException(
+            code=error_codes.SITE_NOT_FOUND,
+            message="Site was not found.",
+            status_code=404,
+        )
 
     async def update_site(
         self,

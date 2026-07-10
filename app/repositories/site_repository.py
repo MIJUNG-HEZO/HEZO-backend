@@ -75,6 +75,7 @@ class SiteRepository:
         name: str,
         site_type: SiteType,
         module_key: ModuleKey,
+        id: UUID | None = None,
     ) -> Site:
         site = Site(
             owner_id=owner_id,
@@ -83,6 +84,7 @@ class SiteRepository:
             module_key=module_key,
             status=SiteStatus.DRAFT,
             is_published=False,
+            **({"id": id} if id is not None else {}),
         )
         self.session.add(site)
         await self.session.flush()

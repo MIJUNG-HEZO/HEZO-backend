@@ -11,7 +11,7 @@ from uuid import UUID
 import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from opentelemetry import trace
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ from app.api.deps import (
 from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.site import (
+    SiteCreateAcceptedResponse,
     SiteCreateRequest,
     SiteListResponse,
     SitePublishAvailabilityResponse,
@@ -650,12 +651,12 @@ async def get_site_contract(
     return _build_contract(str(site_id))
 
 
-@router.get("/{site_id}", response_model=SiteResponse)
+@router.get("/{site_id}", response_model=SiteResponse | SiteCreateAcceptedResponse)
 async def get_site(
     site_id: UUID,
     current_user: Annotated[CurrentUser, Depends(require_authenticated)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
-) -> SiteResponse:
+) -> SiteResponse | SiteCreateAcceptedResponse:
     return await site_service.get_site(user_id=current_user.id, site_id=site_id)
 
 
@@ -1097,17 +1098,25 @@ async def get_pipeline_status(
     return _PipelineStatusResponse(**result)
 
 
-@router.post("", response_model=SiteResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=SiteResponse | SiteCreateAcceptedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_site(
     payload: SiteCreateRequest,
     current_user: Annotated[CurrentUser, Depends(require_email_verified)],
     site_service: Annotated[SiteService, Depends(get_site_service)],
-) -> SiteResponse:
-    return await site_service.create_site(
+    response: Response,
+) -> SiteResponse | SiteCreateAcceptedResponse:
+    result = await site_service.create_site(
         user_id=current_user.id,
         email_verified=current_user.email_verified,
         payload=payload,
     )
+    if isinstance(result, SiteCreateAcceptedResponse):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 # ---------------------------------------------------------------------------
