@@ -37,10 +37,11 @@ def setup_otel(app: "FastAPI | None") -> None:
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     metrics.set_meter_provider(meter_provider)
 
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+    from app.db.session import engine
+    SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+
     if app is not None:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         FastAPIInstrumentor.instrument_app(app)
-
-        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-        from app.db.session import engine
-        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)

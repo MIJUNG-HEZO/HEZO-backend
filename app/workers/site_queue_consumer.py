@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.core.circuit_breakers import aurora_site_insert_breaker, call_breaker_async
 from app.core.enums import ModuleKey, SiteType
+from app.core.otel import setup_otel
 from app.core.site_queue_tracker import DynamoSiteQueueTracker
 from app.db.session import AsyncSessionLocal
 from app.repositories.site_repository import SiteRepository
@@ -154,6 +155,7 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
+    setup_otel(None)
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     asyncio.run(run())
