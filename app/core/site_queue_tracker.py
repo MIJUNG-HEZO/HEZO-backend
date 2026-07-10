@@ -39,7 +39,7 @@ class DynamoSiteQueueTracker:
     async def mark_queued(self, *, site_id: UUID, owner_id: UUID) -> None:
         import pybreaker
 
-        from app.core.circuit_breakers import dynamodb_site_queue_breaker
+        from app.core.circuit_breakers import call_breaker_async, dynamodb_site_queue_breaker
 
         def _put_sync() -> None:
             import boto3
@@ -58,7 +58,7 @@ class DynamoSiteQueueTracker:
             )
 
         try:
-            await dynamodb_site_queue_breaker.call_async(asyncio.to_thread, _put_sync)
+            await call_breaker_async(dynamodb_site_queue_breaker, asyncio.to_thread(_put_sync))
         except (BotoCoreError, ClientError, pybreaker.CircuitBreakerError) as exc:
             logger.warning(
                 "DynamoDB 큐 상태 기록 실패(non-blocking, 정합성엔 영향 없음): site_id=%s %s",

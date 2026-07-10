@@ -18,7 +18,7 @@ import pybreaker
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.core.circuit_breakers import aurora_site_insert_breaker
+from app.core.circuit_breakers import aurora_site_insert_breaker, call_breaker_async
 from app.core.enums import ModuleKey, SiteType
 from app.core.site_queue_tracker import DynamoSiteQueueTracker
 from app.db.session import AsyncSessionLocal
@@ -55,7 +55,7 @@ async def _create_site_from_message(body: dict) -> None:
             )
             await session.commit()
 
-    await aurora_site_insert_breaker.call_async(_insert)
+    await call_breaker_async(aurora_site_insert_breaker, _insert())
 
 
 async def run() -> None:

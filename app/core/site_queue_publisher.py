@@ -14,7 +14,7 @@ from uuid import UUID
 import pybreaker
 from botocore.exceptions import BotoCoreError, ClientError
 
-from app.core.circuit_breakers import sqs_publish_breaker
+from app.core.circuit_breakers import call_breaker_async, sqs_publish_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class SqsSiteQueuePublisher:
             client.send_message(QueueUrl=_SQS_SITE_QUEUE_URL, MessageBody=body)
 
         try:
-            await sqs_publish_breaker.call_async(asyncio.to_thread, _send_sync)
+            await call_breaker_async(sqs_publish_breaker, asyncio.to_thread(_send_sync))
             return True
         except (BotoCoreError, ClientError) as exc:
             logger.warning("SQS 발행 실패, 동기 폴백 경로로 전환: site_id=%s %s", site_id, exc)
